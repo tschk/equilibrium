@@ -3,7 +3,7 @@
 //! Press ← / → (or h/l) to change n, q to quit.
 //! Every keystroke triggers live FFI calls to C, C++, Zig, Nim, V, D, Odin, and Rust.
 
-use crepuscularity_tui::{render_template, TemplateContext};
+use crepuscularity_tui::{render_template, TemplateContext, TemplateValue};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEventKind},
     execute,
@@ -11,7 +11,6 @@ use crossterm::{
 };
 use ratatui::{
     style::{Color, Style},
-    widgets::{Block, Clear},
     DefaultTerminal, Frame,
 };
 use std::io;
@@ -128,11 +127,9 @@ const TEMPLATE: &str = include_str!("../templates/polyglot-tui.crepus");
 fn ui(frame: &mut Frame, app: &App) {
     let n = app.n;
     let area = frame.area();
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default().style(Style::default().bg(Color::Black)),
-        area,
-    );
+    frame
+        .buffer_mut()
+        .set_style(area, Style::default().fg(Color::White).bg(Color::Black));
 
     // ── Title ─────────────────────────────────────────────────────────────────
     let mut rows = Vec::new();
@@ -252,7 +249,7 @@ fn ui(frame: &mut Frame, app: &App) {
     // ── Footer ────────────────────────────────────────────────────────────────
     let mut ctx = TemplateContext::new();
     ctx.set("n", n);
-    ctx.set("rows", rows);
+    ctx.set("rows", TemplateValue::List(rows));
     let _ = render_template(TEMPLATE, &ctx, frame, area);
 }
 
@@ -300,4 +297,40 @@ fn run(mut terminal: DefaultTerminal) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn renders_black_background_and_every_language() {
+        let backend = TestBackend::new(96, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let app = App::new();
+
+        terminal.draw(|frame| ui(frame, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert!(buffer
+            .content
+            .iter()
+            .all(|cell| cell.style().bg == Some(Color::Black)));
+
+        let width = buffer.area.width as usize;
+        let text = buffer
+            .content
+            .chunks(width)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        for lang in ["C", "C++", "Zig", "Nim", "V", "D", "Odin", "Rust"] {
+            assert!(text.contains(lang), "missing language row: {lang}");
+        }
+        for result in ["c_add", "cpp_factorial", "zig", "nim", "rust_is_prime"] {
+            assert!(text.contains(result), "missing result text: {result}");
+        }
+    }
 }

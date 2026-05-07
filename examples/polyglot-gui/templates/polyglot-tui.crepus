@@ -1,22 +1,22 @@
 div w-full h-full flex-col bg-black text-white
-  div h-[3] border-b border-cyan-500 bg-black flex-row px-2
+  div h-[2] border-b border-cyan-500 bg-black flex-row px-2
     span flex-1 text-cyan-400 font-bold
       "Equilibrium · Polyglot Calculator"
     span text-gray-500
       "live FFI: C C++ Zig Nim V D Odin Rust"
-  div h-[3] bg-black flex-row px-2
+  div h-[1] bg-black flex-row px-2
     span text-gray-500
       "n = "
     span text-white font-bold
       "{n}"
-  div h-[3] bg-black px-2 text-gray-500
+  div h-[1] bg-black px-2 text-gray-500
     "[← / h] -1   [→ / l] +1   [d] x2   [s] /2   [r] reset   [q] quit"
-  div flex-1 bg-black flex-col gap-1 px-2
+  div flex-1 bg-black flex-col px-2
     for row in {rows}
-      div h-[2] flex-row
-        span w-[7] font-bold class:dim={!row.linked}
-          "{row.lang}"
-        span flex-1 class:dim={!row.linked}
-          "{row.result}"
+      div h-[1] bg-black flex-row
+        span w-[7] font-bold class:dim={!linked}
+          "{lang}"
+        span flex-1 class:dim={!linked}
+          "{result}"
   div h-[1] bg-black text-gray-500
     "Built with equilibrium-ffi (auto-generated FFI bindings) + crepuscularity-tui"
