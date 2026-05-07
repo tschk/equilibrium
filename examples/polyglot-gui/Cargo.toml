@@ -5,6 +5,7 @@ edition = "2021"
 
 [build-dependencies]
 cc = "1"
+crepuscularity-core = "0.4.0"
 equilibrium-ffi = { path = "../.." }
 which = "6"
 
@@ -18,8 +19,8 @@ tui = ["dep:crepuscularity-tui", "dep:ratatui", "dep:crossterm"]
 # Build natively on Windows: cargo build --release (needs VS Build Tools)
 # Build on Linux: cargo build --release (needs mesa-vulkan-drivers)
 gpui = { version = "0.2", optional = true }
-crepuscularity-gpui = { version = "0.3.3", optional = true }
-crepuscularity-tui = { version = "0.2.1", optional = true }
+crepuscularity-gpui = { version = "0.4.0", optional = true }
+crepuscularity-tui = { version = "0.3.0", optional = true }
 equilibrium-ffi = { path = "../.." }
 rayon = { version = "1.10", optional = true }
 which = "6"

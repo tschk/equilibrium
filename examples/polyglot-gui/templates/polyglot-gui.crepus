@@ -1,0 +1,12 @@
+div relative w-full h-full overflow-hidden bg-[#050507] text-[#f4f4f5]
+  {parts.background}
+  {parts.mode_switcher}
+  if {parts.show_log}
+    {parts.log_panel}
+  if {parts.show_pipeline_header}
+    div absolute left-[28px] right-[28px] top-[24px] flex justify-end
+      div w-full max-w-[420px] overflow-hidden flex flex-col items-end
+        {parts.pipeline_title}
+        {parts.pipeline_value}
+        {parts.pipeline_controls}
+  {parts.mode_content}

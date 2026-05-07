@@ -1,6 +1,17 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+fn raw_string_literal(source: &str) -> String {
+    for hashes in 0..16 {
+        let marker = "#".repeat(hashes);
+        let terminator = format!("\"{marker}");
+        if !source.contains(&terminator) {
+            return format!("r{marker}\"{source}\"{marker}");
+        }
+    }
+    panic!("crepus template contains too many raw string delimiters");
+}
+
 /// Try `which` first, then fall back to known installation paths.
 fn find_bin(name: &str, fallbacks: &[&str]) -> Option<PathBuf> {
     // First try current PATH (the extra_paths from earlier in main())
@@ -61,6 +72,16 @@ fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let foreign = manifest.join("foreign-code");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    crepuscularity_core::build::compile_crepus("templates").expect("compile crepus templates");
+    let gui_template = manifest.join("templates/polyglot-gui.crepus");
+    let gui_template_source =
+        std::fs::read_to_string(&gui_template).expect("read polyglot-gui crepus template");
+    let gui_template_literal = raw_string_literal(&gui_template_source);
+    let gui_template_rs = format!(
+        "fn render_crepus_shell(parts: CrepusShellParts) -> impl IntoElement {{ view! {{{gui_template_literal}}} }}\n"
+    );
+    std::fs::write(out_dir.join("polyglot_gui_template.rs"), gui_template_rs)
+        .expect("write polyglot GUI template");
 
     // ── C module (always available) ─────────────────────────────────────────
     cc::Build::new()

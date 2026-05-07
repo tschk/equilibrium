@@ -8,6 +8,8 @@ use gpui::{
 };
 use rayon::prelude::*;
 
+include!(concat!(env!("OUT_DIR"), "/polyglot_gui_template.rs"));
+
 #[cfg(has_c)]
 mod c_ffi {
     include!(concat!(env!("OUT_DIR"), "/c_bindings.rs"));
@@ -175,6 +177,18 @@ struct LogEntry {
     lang: &'static str,
     text: String,
     color: u32,
+}
+
+struct CrepusShellParts {
+    background: AnyElement,
+    mode_switcher: Div,
+    show_log: bool,
+    log_panel: AnyElement,
+    show_pipeline_header: bool,
+    pipeline_title: Div,
+    pipeline_value: Div,
+    pipeline_controls: Div,
+    mode_content: AnyElement,
 }
 
 struct Dashboard {
@@ -374,47 +388,29 @@ impl Render for Dashboard {
                 .bottom(px(0.0))
                 .into_any_element(),
         };
+        let mode_switcher = mode_switcher(self.mode, cx);
+        let show_log = self.mode == Mode::Constellation;
+        let log_panel: AnyElement = if show_log {
+            constellation_log_panel(&self.stars, &self.shooting_star, &self.log).into_any_element()
+        } else {
+            div().into_any_element()
+        };
+        let show_pipeline_header = self.mode == Mode::Pipeline;
+        let pipeline_title = title(self.mode);
+        let pipeline_value = value_badge(self.n);
+        let pipeline_controls = control_strip(cx);
 
-        div()
-            .relative()
-            .w_full()
-            .h_full()
-            .overflow_hidden()
-            .bg(rgb(0x050507))
-            .text_color(rgb(0xf4f4f5))
-            .child(background)
-            .child(mode_switcher(self.mode, cx))
-            .when(self.mode == Mode::Constellation, |root| {
-                root.child(constellation_log_panel(
-                    &self.stars,
-                    &self.shooting_star,
-                    &self.log,
-                ))
-            })
-            .when(self.mode == Mode::Pipeline, |root| {
-                root.child(
-                    div()
-                        .absolute()
-                        .left(px(28.0))
-                        .right(px(28.0))
-                        .top(px(24.0))
-                        .flex()
-                        .justify_end()
-                        .child(
-                            div()
-                                .w_full()
-                                .max_w(px(420.0))
-                                .overflow_hidden()
-                                .flex()
-                                .flex_col()
-                                .items_end()
-                                .child(title(self.mode))
-                                .child(value_badge(self.n))
-                                .child(control_strip(cx)),
-                        ),
-                )
-            })
-            .child(mode_content)
+        render_crepus_shell(CrepusShellParts {
+            background,
+            mode_switcher,
+            show_log,
+            log_panel,
+            show_pipeline_header,
+            pipeline_title,
+            pipeline_value,
+            pipeline_controls,
+            mode_content,
+        })
     }
 }
 
