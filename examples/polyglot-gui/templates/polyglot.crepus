@@ -1,95 +1,83 @@
 div relative w-full h-full overflow-hidden tui:background-black gpui:bg-[#050507] text-white
   if {is_gui}
-    {parts.mode_switcher}
     if {is_dashboard}
       div absolute left-[28px] right-[28px] top-[78px] bottom-[24px] flex flex-col gap-3
-        div flex gap-3
-          div flex-1 rounded-lg border border-cyan-700 bg-[#071015] p-4
-            "Equilibrium"
-            "mode: {mode}   n={n}"
-          div w-[220px] rounded-lg border border-[#27272a] bg-[#08080a] p-4
-            "Modules"
-            "linked  {linked_count}/8"
-            "missing {missing_count}"
-          div w-[430px] rounded-lg border border-[#27272a] bg-[#08080a] p-4
-            "Controls"
+        div flex items-center gap-3
+          div rounded-lg border border-cyan-700 bg-[#071015] px-4 py-2
+            "Pipeline · n={n}"
+          div rounded-lg border border-[#27272a] bg-[#08080a] px-4 py-2
+            "linked {linked_count}/8 · missing {missing_count}"
+          div flex-1 rounded-lg border border-[#27272a] bg-[#08080a] p-2
             {parts.pipeline_controls}
-        div flex-1 flex gap-3 overflow-hidden
-          div w-[460px] overflow-hidden rounded-lg border border-[#27272a] bg-[#09090b] p-4 flex flex-col gap-3
-            "Pipeline"
-            for (lang, linked, result, status, accent) in {gui_rows}
-              div rounded-lg border border-[#27272a] bg-[#111113] p-3
-                span font-bold {accent}
-                  "{lang}  {status}"
-                span text-gray-300
-                  "{result}"
-          div flex-1 flex flex-col gap-3
-            div h-[150px] rounded-lg border border-cyan-800 bg-[#071015] p-4
-              "Session"
-              "input        {n}"
-              "ffi rows     8"
-              "active       {linked_count}"
-              "missing      {missing_count}"
-            div flex-1 rounded-lg border border-[#27272a] bg-[#050507] p-4 overflow-hidden font-[monospace] text-[9px]
-              "Constellation Preview"
-              for line in {gui_constellation_preview_rows}
-                div h-[10px] text-cyan-400
-                  "{line}"
+        div flex-1 overflow-hidden rounded-lg border border-[#27272a] bg-[#09090b] p-4 flex flex-col gap-3
+          "Pipeline (Math Display)"
+          for (lang, linked, result, status, accent) in {gui_rows}
+            div rounded-lg border border-[#27272a] bg-[#111113] p-3
+              div flex flex-row items-center gap-2
+                if {lang == "C"}
+                  span font-bold text-emerald-400
+                    "{lang}"
+                else if {lang == "C++"}
+                  span font-bold text-sky-400
+                    "{lang}"
+                else if {lang == "Zig"}
+                  span font-bold text-amber-400
+                    "{lang}"
+                else if {lang == "Nim"}
+                  span font-bold text-cyan-400
+                    "{lang}"
+                else if {lang == "V"}
+                  span font-bold text-green-400
+                    "{lang}"
+                else if {lang == "D"}
+                  span font-bold text-blue-400
+                    "{lang}"
+                else if {lang == "Odin"}
+                  span font-bold text-rose-400
+                    "{lang}"
+                else
+                  span font-bold text-fuchsia-400
+                    "{lang}"
+                if {linked}
+                  span text-green-400 font-bold
+                    "LINKED"
+                else
+                  span text-gray-500 font-bold
+                    "MISSING"
+              span text-gray-300
+                "{result}"
     if {is_constellation}
-      div absolute left-[28px] right-[28px] top-[78px] bottom-[24px] rounded-lg border border-cyan-800 bg-[#050507] p-4 overflow-hidden font-[monospace] text-[9px]
-        "Constellation"
-        for line in {gui_constellation_rows}
-          div h-[10px] text-cyan-400
-            "{line}"
+      div absolute left-[28px] right-[28px] top-[78px] bottom-[24px] flex gap-3
+        div flex-1 overflow-hidden rounded-lg border border-cyan-800 bg-[#050507] p-2
+          {parts.constellation_canvas}
+        {parts.log_panel}
+    {parts.mode_switcher}
   if {is_tui}
     if {is_dashboard}
-      div w-full h-full flex-col gap-1 p-1
-        div h-[5] flex-row gap-1
-          div flex-1 tui-panel-bright
-            "Equilibrium"
-            "mode: {mode}   n={n}"
-          div w-[22] tui-panel
-            "Modules"
-            "linked  {linked_count}/8"
-            "missing {missing_count}"
-          div w-[32] tui-panel
-            "Controls"
-            button h-[1]
-              "[1] dashboard"
-            button h-[1]
-              "[2] constellation"
-            "[tab/m] switch   [q] quit"
-        div flex-1 flex-row gap-1
-          div w-[34] tui-panel tui:overflow-y-scroll scroll-offset={pipeline_scroll}
-            "Pipeline"
-            for (lang, linked, result, status, accent) in {tui_rows}
-              div h-[2] flex-row
-                span w-[8] font-bold {accent} class:text-gray-500={!linked}
-                  "{lang}"
-                span w-[8] text-green-400 class:text-gray-500={!linked}
-                  "{status}"
-                span flex-1 tui-muted
-                  "{result}"
-          div flex-1 flex-col gap-1
-            div h-[8] tui-panel-bright
-              "Session"
-              "input        {n}"
-              "ffi rows     8"
-              "active       {linked_count}"
-              "missing      {missing_count}"
-            div flex-1 tui-panel
-              "Constellation Preview"
-              for line in {tui_constellation_preview_rows}
-                div h-[1] text-cyan-400
-                  "{line}"
-        div h-[1] flex-row bg-black text-gray-500
-          span flex-1
-            "[left/right] n +/- 1   [d] x2   [s] /2   [r] reset"
-          span
-            "crepus target: tui"
+      div flex-1 flex-col gap-1 p-1 tui:background-black gpui:bg-[#050507]
+        div h-[3] border border-cyan-700 tui:background-black gpui:bg-[#071015] p-1
+          "Pipeline (Math Display)  n={n}  linked={linked_count}/8  missing={missing_count}  [left/right] +/-1 [d] x2 [s] /2 [r] reset"
+        div flex-1 border border-[#27272a] tui:background-black gpui:bg-[#09090b] p-1 tui:overflow-y-scroll scroll-offset={pipeline_scroll}
+          for (lang, linked, result, status, accent) in {tui_rows}
+            div h-[2] flex-row
+              span w-[8] font-bold {accent} class:text-gray-500={!linked}
+                "{lang}"
+              span w-[8] text-green-400 class:text-gray-500={!linked}
+                "{status}"
+              span flex-1 tui-muted
+                "{result}"
     if {is_constellation}
-      div w-full h-full tui-panel-bright
-        "Constellation"
-        for line in {tui_constellation_rows}
-          div h-[1] text-cyan-400
-            "{line}"
+      div flex-1 flex-row gap-1 p-1 tui:background-black gpui:bg-[#050507]
+        div flex-1 overflow-hidden font-[monospace] tui:background-black gpui:bg-[#050507]
+          for (line, color) in {tui_constellation_rows}
+            div h-[1] {color}
+              "{line}"
+        div w-[38] border border-[#27272a] tui:background-black gpui:bg-[#07080c] p-1
+          span text-white font-bold
+            "LIVE LOG"
+          for (lang, text, color) in {tui_log_rows}
+            div h-[2] flex-row
+              span w-[7] {color}
+                "{lang}"
+              span flex-1 text-gray-300
+                "{text}"
