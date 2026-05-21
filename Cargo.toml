@@ -1,10 +1,11 @@
 [package]
 name = "equilibrium-ffi"
+authors = ["Max Carter <max@undivisible.dev>"]
 version = "0.1.1"
 edition = "2021"
 description = "Automatic C FFI generation for C-compiling languages (V, Zig, C++, C#, Rust, D, Nim, Odin) (unstable and in development)"
 license = "MPL-2.0"
-repository = "https://github.com/semitechnological/equilibrium"
+repository = "https://github.com/tschk/equilibrium"
 
 [dependencies]
 which = "6"
