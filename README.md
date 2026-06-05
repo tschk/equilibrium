@@ -119,18 +119,18 @@ eq generate mylib.h -o src/mylib_ffi.rs
 
 ```toml
 [dependencies]
-equilibrium-ffi = { git = "https://github.com/semitechnological/equilibrium" }
+equilibrium-ffi = { git = "https://github.com/tschk/equilibrium" }
 ```
 
 For the `eq` CLI:
 ```toml
 [dependencies]
-equilibrium-ffi = { git = "https://github.com/semitechnological/equilibrium", features = ["cli"] }
+equilibrium-ffi = { git = "https://github.com/tschk/equilibrium", features = ["cli"] }
 ```
 
 Or install globally:
 ```bash
-cargo install --git https://github.com/semitechnological/equilibrium --features cli
+cargo install --git https://github.com/tschk/equilibrium --features cli
 ```
 
 ## Architecture
@@ -215,7 +215,7 @@ cargo test
 - `.github/actions/setup-equilibrium/` — reusable action for your projects
 
 ```yaml
-- uses: semitechnological/equilibrium/.github/actions/setup-equilibrium@main
+- uses: tschk/equilibrium/.github/actions/setup-equilibrium@main
   with:
     install-zig: true
     install-nim: true

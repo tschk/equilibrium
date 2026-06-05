@@ -6,7 +6,7 @@ Ergonomic FFI exports for Rust code consumed by equilibrium-ffi.
 
 ```toml
 [dependencies]
-equilibrium-rust = { git = "https://github.com/semitechnological/equilibrium", subdir = "equilibrium-rust" }
+equilibrium-rust = { git = "https://github.com/tschk/equilibrium", subdir = "equilibrium-rust" }
 ```
 
 ## Usage

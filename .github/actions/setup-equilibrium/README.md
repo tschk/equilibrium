@@ -18,7 +18,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Setup Equilibrium
-        uses: semitechnological/equilibrium/.github/actions/setup-equilibrium@main
+        uses: tschk/equilibrium/.github/actions/setup-equilibrium@main
         with:
           rust-version: stable
           install-zig: true

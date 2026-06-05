@@ -18,7 +18,7 @@ Add equilibrium to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-equilibrium-ffi = { git = "https://github.com/semitechnological/equilibrium" }
+equilibrium-ffi = { git = "https://github.com/tschk/equilibrium" }
 ```
 
 Basic usage:
