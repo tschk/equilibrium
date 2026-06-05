@@ -5,7 +5,7 @@
 //!   eq install            — interactive multi-select installer
 //!   eq install zig nim … — install specific compilers directly
 //!   eq build [ARGS…]      — cargo build with compilers on PATH
-//!   `eq generate <HEADER>`  — emit Rust FFI bindings from a C header
+//!   `eq generate <PATH>`    — emit bindings or consumer wrappers from a header or source
 
 use clap::{Parser, Subcommand};
 use console::{style, Style, Term};
@@ -37,13 +37,19 @@ enum Cmd {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Generate Rust FFI bindings from a C header
+    /// Generate bindings or consumer wrappers from a header or source file
     Generate {
         /// Path to the C header
         header: PathBuf,
         /// Write output to this file (default: stdout)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Generate imports for a consumer language or `all`
+        #[arg(long)]
+        consumer: Option<String>,
+        /// Output directory for multi-language generation
+        #[arg(long)]
+        out_dir: Option<PathBuf>,
     },
 }
 
@@ -718,7 +724,88 @@ fn cmd_build(args: Vec<String>) -> ExitCode {
 
 // ── Subcommand: generate ──────────────────────────────────────────────────────
 
-fn cmd_generate(header: PathBuf, output: Option<PathBuf>) -> ExitCode {
+fn cmd_generate(
+    header: PathBuf,
+    output: Option<PathBuf>,
+    consumer: Option<String>,
+    out_dir: Option<PathBuf>,
+) -> ExitCode {
+    if let Some(consumer) = consumer {
+        let languages = if consumer.eq_ignore_ascii_case("all") {
+            equilibrium_ffi::Language::all().to_vec()
+        } else if let Some(language) = equilibrium_ffi::Language::from_cli_name(&consumer) {
+            vec![language]
+        } else {
+            eprintln!(
+                "{} unknown consumer language: {}",
+                style("✗").red(),
+                consumer
+            );
+            return ExitCode::FAILURE;
+        };
+
+        let is_header = header
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext, "h" | "hh" | "hpp" | "hxx"));
+
+        if languages.len() > 1 && out_dir.is_none() {
+            eprintln!(
+                "{} --out-dir is required when generating imports for all languages",
+                style("✗").red()
+            );
+            return ExitCode::FAILURE;
+        }
+
+        if is_header {
+            return write_generated_imports(&header, languages, output, out_dir);
+        }
+
+        let module = match equilibrium_ffi::load_with_options(
+            &header,
+            equilibrium_ffi::LoadOptions::default()
+                .generate_bindings(false)
+                .consumer_languages(languages.clone()),
+        ) {
+            Ok(module) => module,
+            Err(e) => {
+                eprintln!("{} source generation failed: {e}", style("✗").red());
+                return ExitCode::FAILURE;
+            }
+        };
+
+        if languages.len() == 1 {
+            if let Some(generated) = module.imports.into_iter().next() {
+                return write_single_output(generated.code, output);
+            }
+            eprintln!("{} no imports generated", style("✗").red());
+            return ExitCode::FAILURE;
+        }
+
+        let target_dir = out_dir.expect("validated out_dir");
+        if let Err(e) = std::fs::create_dir_all(&target_dir) {
+            eprintln!(
+                "{} failed to create {}: {e}",
+                style("✗").red(),
+                target_dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+        for generated in module.imports {
+            let path = target_dir.join(import_filename(generated.language));
+            if let Err(e) = std::fs::write(&path, generated.code) {
+                eprintln!(
+                    "{} write failed for {}: {e}",
+                    style("✗").red(),
+                    path.display()
+                );
+                return ExitCode::FAILURE;
+            }
+        }
+        println!("{} wrote {}", style("✓").green(), target_dir.display());
+        return ExitCode::SUCCESS;
+    }
+
     let is_header = header
         .extension()
         .and_then(|ext| ext.to_str())
@@ -727,17 +814,7 @@ fn cmd_generate(header: PathBuf, output: Option<PathBuf>) -> ExitCode {
         return match equilibrium_ffi::load(&header) {
             Ok(module) => {
                 if let Some(binding) = module.bindings {
-                    match output {
-                        Some(path) => {
-                            if let Err(e) = std::fs::write(&path, &binding.code) {
-                                eprintln!("{} write failed: {e}", style("✗").red());
-                                return ExitCode::FAILURE;
-                            }
-                            println!("{} wrote {}", style("✓").green(), path.display());
-                        }
-                        None => print!("{}", binding.code),
-                    }
-                    ExitCode::SUCCESS
+                    write_single_output(binding.code, output)
                 } else {
                     eprintln!(
                         "{} no bindings generated; exports: {}",
@@ -756,24 +833,99 @@ fn cmd_generate(header: PathBuf, output: Option<PathBuf>) -> ExitCode {
 
     let opts = equilibrium_ffi::BindingOptions::default();
     match equilibrium_ffi::generate_bindings(&header, &opts) {
-        Ok(binding) => {
-            match output {
-                Some(path) => {
-                    if let Err(e) = std::fs::write(&path, &binding.code) {
-                        eprintln!("{} write failed: {e}", style("✗").red());
-                        return ExitCode::FAILURE;
-                    }
-                    println!("{} wrote {}", style("✓").green(), path.display());
-                }
-                None => print!("{}", binding.code),
-            }
-            ExitCode::SUCCESS
-        }
+        Ok(binding) => write_single_output(binding.code, output),
         Err(e) => {
             eprintln!("{} binding generation failed: {e}", style("✗").red());
             ExitCode::FAILURE
         }
     }
+}
+
+fn write_generated_imports(
+    header: &Path,
+    languages: Vec<equilibrium_ffi::Language>,
+    output: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
+) -> ExitCode {
+    if languages.len() == 1 {
+        return match equilibrium_ffi::generate_imports(
+            header,
+            languages[0],
+            &equilibrium_ffi::ImportOptions::default(),
+        ) {
+            Ok(generated) => write_single_output(generated.code, output),
+            Err(e) => {
+                eprintln!("{} import generation failed: {e}", style("✗").red());
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    let target_dir = out_dir.expect("validated out_dir");
+    if let Err(e) = std::fs::create_dir_all(&target_dir) {
+        eprintln!(
+            "{} failed to create {}: {e}",
+            style("✗").red(),
+            target_dir.display()
+        );
+        return ExitCode::FAILURE;
+    }
+
+    for language in languages {
+        let generated = match equilibrium_ffi::generate_imports(
+            header,
+            language,
+            &equilibrium_ffi::ImportOptions::default(),
+        ) {
+            Ok(generated) => generated,
+            Err(e) => {
+                eprintln!("{} import generation failed: {e}", style("✗").red());
+                return ExitCode::FAILURE;
+            }
+        };
+        let path = target_dir.join(import_filename(generated.language));
+        if let Err(e) = std::fs::write(&path, generated.code) {
+            eprintln!(
+                "{} write failed for {}: {e}",
+                style("✗").red(),
+                path.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    println!("{} wrote {}", style("✓").green(), target_dir.display());
+    ExitCode::SUCCESS
+}
+
+fn write_single_output(code: String, output: Option<PathBuf>) -> ExitCode {
+    match output {
+        Some(path) => {
+            if let Err(e) = std::fs::write(&path, &code) {
+                eprintln!("{} write failed: {e}", style("✗").red());
+                return ExitCode::FAILURE;
+            }
+            println!("{} wrote {}", style("✓").green(), path.display());
+        }
+        None => print!("{code}"),
+    }
+    ExitCode::SUCCESS
+}
+
+fn import_filename(language: equilibrium_ffi::Language) -> String {
+    match language {
+        equilibrium_ffi::Language::Rust => "bindings.rs",
+        equilibrium_ffi::Language::Zig => "bindings.zig",
+        equilibrium_ffi::Language::C => "bindings.c",
+        equilibrium_ffi::Language::Cpp => "bindings.cpp",
+        equilibrium_ffi::Language::CSharp => "Bindings.cs",
+        equilibrium_ffi::Language::D => "bindings.d",
+        equilibrium_ffi::Language::Nim => "bindings.nim",
+        equilibrium_ffi::Language::Odin => "bindings.odin",
+        equilibrium_ffi::Language::Hare => "bindings.ha",
+        equilibrium_ffi::Language::V => "bindings.v",
+    }
+    .to_string()
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
@@ -784,6 +936,11 @@ fn main() -> ExitCode {
         Cmd::Check => cmd_check(),
         Cmd::Install { names } => cmd_install(names),
         Cmd::Build { args } => cmd_build(args),
-        Cmd::Generate { header, output } => cmd_generate(header, output),
+        Cmd::Generate {
+            header,
+            output,
+            consumer,
+            out_dir,
+        } => cmd_generate(header, output, consumer, out_dir),
     }
 }

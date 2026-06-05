@@ -2,7 +2,7 @@
 
 **Load foreign code with one call**
 
-Equilibrium auto-detects source files in various programming languages, compiles them to C intermediate representation, and loads the result into a Rust-friendly module handle. Binding generation is available when you need it, but `load()` is the primary path.
+Equilibrium auto-detects source files in various programming languages, compiles them to C intermediate representation, and loads the result into a Rust-friendly module handle. Binding generation is available when you need it, but `load()` is the primary path. Generated consumer wrappers can target the same C ABI surface for other supported languages.
 
 ## `eq` CLI
 
@@ -26,6 +26,10 @@ eq build --release --bin my-app
 
 # Generate Rust FFI bindings from a C header (optional)
 eq generate mylib.h -o src/mylib_ffi.rs
+
+# Generate imports for another language
+eq generate mylib.h --consumer zig -o src/mylib.zig
+eq generate mylib.h --consumer all --out-dir generated-imports
 ```
 
 **Install order per platform:**
@@ -45,6 +49,19 @@ println!("{}", lib.output_path.display());
 ```
 
 `load()` compiles the source when needed, then gives you a loaded module wrapper you can inspect, reuse, or turn into generated bindings.
+
+```rust
+use equilibrium_ffi::{Language, LoadOptions, load_with_options};
+
+let lib = load_with_options(
+    "examples/c-ffi/mathlib.c",
+    LoadOptions::default().consumer_languages([Language::Zig, Language::Nim]),
+)?;
+
+for generated in lib.imports {
+    println!("{:?}: {}", generated.language, generated.code);
+}
+```
 
 ## How It Works
 
@@ -98,6 +115,7 @@ println!("{}", lib.output_path.display());
 
 ```bash
 eq generate mylib.h -o src/mylib_ffi.rs
+eq generate mylib.h --consumer csharp -o src/mylib.cs
 ```
 
 ## Supported Languages

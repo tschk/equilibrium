@@ -36,6 +36,37 @@ pub struct LanguageInfo {
 }
 
 impl Language {
+    pub fn cli_name(&self) -> &'static str {
+        match self {
+            Language::V => "v",
+            Language::Zig => "zig",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::CSharp => "csharp",
+            Language::Rust => "rust",
+            Language::D => "d",
+            Language::Nim => "nim",
+            Language::Odin => "odin",
+            Language::Hare => "hare",
+        }
+    }
+
+    pub fn from_cli_name(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "v" | "vlang" => Some(Language::V),
+            "zig" => Some(Language::Zig),
+            "c" => Some(Language::C),
+            "cpp" | "c++" | "cxx" => Some(Language::Cpp),
+            "csharp" | "c#" | "cs" | "dotnet" => Some(Language::CSharp),
+            "rust" | "rs" => Some(Language::Rust),
+            "d" => Some(Language::D),
+            "nim" => Some(Language::Nim),
+            "odin" => Some(Language::Odin),
+            "hare" => Some(Language::Hare),
+            _ => None,
+        }
+    }
+
     /// Get the file extensions for this language.
     pub fn extensions(&self) -> &[&str] {
         match self {

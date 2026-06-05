@@ -28,3 +28,18 @@ extern(C) export int multiply(int a, int b)
 
 D's `extern(C)` makes functions callable from C, which equilibrium can bind to Rust.
 The `@ffi` attribute is a marker for documentation and future tooling.
+
+## Importing Another Target
+
+```bash
+eq generate build/math.h --consumer d -o source/math_bindings.d
+```
+
+```d
+import math_bindings;
+
+void main()
+{
+    add(2, 3);
+}
+```

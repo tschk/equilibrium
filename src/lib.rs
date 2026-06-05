@@ -24,9 +24,11 @@
 //! | Rust | `rustc` | cbindgen |
 
 mod bindings;
+mod c_header;
 mod compiler;
 mod detector;
 mod exports;
+mod imports;
 mod loader;
 mod scanner;
 
@@ -37,6 +39,7 @@ pub use exports::{
     discover_exports, discover_exports_with_options, ExportDiscovery, ExportError, ExportOptions,
     ExportSource,
 };
+pub use imports::{generate_imports, GeneratedImport, ImportOptions};
 pub use loader::{load, load_with_options, LoadError, LoadOptions, LoadedModule};
 pub use scanner::{
     scan_c_libraries, AutoBindingOptions, GenerationResult, LibraryBindingResult, LibraryDiscovery,

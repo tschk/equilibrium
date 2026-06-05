@@ -6,6 +6,7 @@ use crate::bindings::{generate_bindings, BindingOptions, GeneratedBinding};
 use crate::compiler::compile_to_c;
 use crate::detector::{detect_language, find_compiler, Language};
 use crate::exports::{discover_exports_with_options, ExportOptions, ExportSource};
+use crate::imports::{generate_imports, GeneratedImport, ImportOptions};
 
 /// Options for loading a foreign module.
 #[derive(Clone, Debug)]
@@ -26,6 +27,7 @@ pub struct LoadOptions {
     pub compile_args: Vec<String>,
     pub exports: Vec<String>,
     pub config_path: Option<PathBuf>,
+    pub consumer_languages: Vec<Language>,
 }
 
 impl Default for LoadOptions {
@@ -40,6 +42,7 @@ impl Default for LoadOptions {
             compile_args: Vec::new(),
             exports: Vec::new(),
             config_path: None,
+            consumer_languages: Vec::new(),
         }
     }
 }
@@ -68,6 +71,14 @@ impl LoadOptions {
         self.config_path = Some(path.as_ref().to_path_buf());
         self
     }
+
+    pub fn consumer_languages<I>(mut self, languages: I) -> Self
+    where
+        I: IntoIterator<Item = Language>,
+    {
+        self.consumer_languages = languages.into_iter().collect();
+        self
+    }
 }
 
 /// Result of loading a foreign module.
@@ -86,6 +97,7 @@ pub struct LoadedModule {
     pub exports: Vec<String>,
     pub export_source: ExportSource,
     pub warnings: Vec<String>,
+    pub imports: Vec<GeneratedImport>,
 }
 
 impl LoadedModule {
@@ -180,6 +192,18 @@ pub fn load_with_options<S: AsRef<Path>>(
         None
     };
 
+    let import_source = result.header_path.clone().unwrap_or_else(|| source.clone());
+    let import_options =
+        ImportOptions::default().allowlist_functions(export_discovery.exports.clone());
+    let mut imports = Vec::new();
+    let mut warnings = export_discovery.warnings;
+    for language in &options.consumer_languages {
+        let generated = generate_imports(&import_source, *language, &import_options)
+            .map_err(LoadError::ImportFailed)?;
+        warnings.extend(generated.warnings.clone());
+        imports.push(generated);
+    }
+
     Ok(LoadedModule {
         output_path: result.output_path,
         header_path: result.header_path,
@@ -188,7 +212,8 @@ pub fn load_with_options<S: AsRef<Path>>(
         source_path: source,
         exports: export_discovery.exports,
         export_source: export_discovery.source,
-        warnings: export_discovery.warnings,
+        warnings,
+        imports,
     })
 }
 
@@ -204,6 +229,7 @@ pub enum LoadError {
     },
     BindingFailed(String),
     ExportFailed(String),
+    ImportFailed(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -226,6 +252,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::ExportFailed(msg) => {
                 write!(f, "Export discovery failed: {}", msg)
+            }
+            LoadError::ImportFailed(msg) => {
+                write!(f, "Import generation failed: {}", msg)
             }
         }
     }

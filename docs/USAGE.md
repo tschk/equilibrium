@@ -32,6 +32,21 @@ let lang = detect_language(source).unwrap();
 let result = compile_to_c(source, Path::new("./build"))?;
 ```
 
+You can also generate consumer wrappers from the same header:
+
+```rust
+use equilibrium_ffi::{generate_imports, ImportOptions, Language};
+use std::path::Path;
+
+let zig = generate_imports(
+    Path::new("build/mylib.h"),
+    Language::Zig,
+    &ImportOptions::default(),
+)?;
+
+println!("{}", zig.code);
+```
+
 ## Language Detection
 
 Equilibrium detects languages by file extension:

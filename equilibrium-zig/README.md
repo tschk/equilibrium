@@ -32,3 +32,17 @@ const ptr = eq.FFI.toPtr(slice);
 ## Why?
 
 Zig's `export` keyword makes functions callable from C with C ABI, which equilibrium can bind to Rust.
+
+## Importing Another Target
+
+```bash
+eq generate build/math.h --consumer zig -o src/math_bindings.zig
+```
+
+```zig
+const math = @import("math_bindings.zig");
+
+pub fn main() void {
+    _ = math.add(2, 3);
+}
+```

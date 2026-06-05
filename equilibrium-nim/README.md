@@ -32,3 +32,15 @@ let cStr = "Hello".toCString()
 ## Why?
 
 Nim's `{.exportc.}` pragma makes functions callable from C, which equilibrium can then bind to Rust.
+
+## Importing Another Target
+
+```bash
+eq generate build/math.h --consumer nim -o src/math_bindings.nim
+```
+
+```nim
+import math_bindings
+
+discard add(2, 3)
+```
