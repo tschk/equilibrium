@@ -26,12 +26,17 @@
 mod bindings;
 mod compiler;
 mod detector;
+mod exports;
 mod loader;
 mod scanner;
 
 pub use bindings::{generate_bindings, BindingOptions, GeneratedBinding};
 pub use compiler::{compile_batch, compile_to_c, CompileError, CompileResult};
 pub use detector::{detect_language, find_compiler, scan_directory, Language, LanguageInfo};
+pub use exports::{
+    discover_exports, discover_exports_with_options, ExportDiscovery, ExportError, ExportOptions,
+    ExportSource,
+};
 pub use loader::{load, load_with_options, LoadError, LoadOptions, LoadedModule};
 pub use scanner::{
     scan_c_libraries, AutoBindingOptions, GenerationResult, LibraryBindingResult, LibraryDiscovery,

@@ -719,6 +719,41 @@ fn cmd_build(args: Vec<String>) -> ExitCode {
 // ── Subcommand: generate ──────────────────────────────────────────────────────
 
 fn cmd_generate(header: PathBuf, output: Option<PathBuf>) -> ExitCode {
+    let is_header = header
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "h" | "hh" | "hpp" | "hxx"));
+    if !is_header {
+        return match equilibrium_ffi::load(&header) {
+            Ok(module) => {
+                if let Some(binding) = module.bindings {
+                    match output {
+                        Some(path) => {
+                            if let Err(e) = std::fs::write(&path, &binding.code) {
+                                eprintln!("{} write failed: {e}", style("✗").red());
+                                return ExitCode::FAILURE;
+                            }
+                            println!("{} wrote {}", style("✓").green(), path.display());
+                        }
+                        None => print!("{}", binding.code),
+                    }
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!(
+                        "{} no bindings generated; exports: {}",
+                        style("✗").red(),
+                        module.exports.join(", ")
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+            Err(e) => {
+                eprintln!("{} source generation failed: {e}", style("✗").red());
+                ExitCode::FAILURE
+            }
+        };
+    }
+
     let opts = equilibrium_ffi::BindingOptions::default();
     match equilibrium_ffi::generate_bindings(&header, &opts) {
         Ok(binding) => {

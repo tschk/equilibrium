@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use crate::bindings::{generate_bindings, BindingOptions, GeneratedBinding};
 use crate::compiler::compile_to_c;
 use crate::detector::{detect_language, find_compiler, Language};
+use crate::exports::{discover_exports_with_options, ExportOptions, ExportSource};
 
 /// Options for loading a foreign module.
 #[derive(Clone, Debug)]
@@ -23,6 +24,8 @@ pub struct LoadOptions {
     pub link_args: Vec<String>,
     /// Extra compile args
     pub compile_args: Vec<String>,
+    pub exports: Vec<String>,
+    pub config_path: Option<PathBuf>,
 }
 
 impl Default for LoadOptions {
@@ -35,7 +38,35 @@ impl Default for LoadOptions {
             link: true,
             link_args: Vec::new(),
             compile_args: Vec::new(),
+            exports: Vec::new(),
+            config_path: None,
         }
+    }
+}
+
+impl LoadOptions {
+    pub fn exports<I, S>(mut self, exports: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.exports = exports.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn output_dir<P: AsRef<Path>>(mut self, output_dir: P) -> Self {
+        self.output_dir = Some(output_dir.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn generate_bindings(mut self, generate_bindings: bool) -> Self {
+        self.generate_bindings = generate_bindings;
+        self
+    }
+
+    pub fn config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.config_path = Some(path.as_ref().to_path_buf());
+        self
     }
 }
 
@@ -52,6 +83,9 @@ pub struct LoadedModule {
     pub language: Language,
     /// Path to the original source
     pub source_path: PathBuf,
+    pub exports: Vec<String>,
+    pub export_source: ExportSource,
+    pub warnings: Vec<String>,
 }
 
 impl LoadedModule {
@@ -103,6 +137,13 @@ pub fn load_with_options<S: AsRef<Path>>(
         return Err(LoadError::UnknownLanguage(source.clone()));
     };
 
+    let export_options = ExportOptions {
+        exports: options.exports.clone(),
+        config_path: options.config_path.clone(),
+    };
+    let export_discovery = discover_exports_with_options(&source, lang, &export_options)
+        .map_err(|e| LoadError::ExportFailed(e.to_string()))?;
+
     let output_dir = options.output_dir.clone().unwrap_or_else(|| {
         // Use CARGO_MANIFEST_DIR if available, otherwise current dir
         std::env::var("CARGO_MANIFEST_DIR")
@@ -145,6 +186,9 @@ pub fn load_with_options<S: AsRef<Path>>(
         bindings,
         language: lang,
         source_path: source,
+        exports: export_discovery.exports,
+        export_source: export_discovery.source,
+        warnings: export_discovery.warnings,
     })
 }
 
@@ -159,6 +203,7 @@ pub enum LoadError {
         error: std::io::Error,
     },
     BindingFailed(String),
+    ExportFailed(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -178,6 +223,9 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::BindingFailed(msg) => {
                 write!(f, "Binding generation failed: {}", msg)
+            }
+            LoadError::ExportFailed(msg) => {
+                write!(f, "Export discovery failed: {}", msg)
             }
         }
     }
