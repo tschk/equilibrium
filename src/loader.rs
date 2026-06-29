@@ -2,11 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::bindings::{generate_bindings, BindingOptions, GeneratedBinding};
-use crate::compiler::compile_to_c;
+use crate::bindings::{generate_bindings_from_content, BindingOptions, GeneratedBinding};
+use crate::c_header::parse_c_header;
+use crate::compiler::compile_to_c_with_extra;
 use crate::detector::{detect_language, find_compiler, Language};
 use crate::exports::{discover_exports_with_options, ExportOptions, ExportSource};
 use crate::imports::{generate_imports, GeneratedImport, ImportOptions};
+use crate::limits::read_header_content;
 
 /// Options for loading a foreign module.
 #[derive(Clone, Debug)]
@@ -21,10 +23,10 @@ pub struct LoadOptions {
     pub binding_options: Option<BindingOptions>,
     /// Link the compiled library (default: true for object files)
     pub link: bool,
-    /// Extra link args
-    pub link_args: Vec<String>,
-    /// Extra compile args
+    /// Extra compile args appended to the compiler invocation
     pub compile_args: Vec<String>,
+    /// Reserved for a future link step (stored on options, not applied yet)
+    pub link_args: Vec<String>,
     pub exports: Vec<String>,
     pub config_path: Option<PathBuf>,
     pub consumer_languages: Vec<Language>,
@@ -101,11 +103,6 @@ pub struct LoadedModule {
 }
 
 impl LoadedModule {
-    /// Check if this module has bindings.
-    pub fn has_bindings(&self) -> bool {
-        self.bindings.is_some()
-    }
-
     /// Get the binding code if available.
     pub fn bindings_code(&self) -> Option<&str> {
         self.bindings.as_ref().map(|b| b.code.as_str())
@@ -172,19 +169,37 @@ pub fn load_with_options<S: AsRef<Path>>(
 
     let _compiler = find_compiler(lang).ok_or(LoadError::CompilerNotFound(lang))?;
 
-    let result = compile_to_c(&source, &output_dir)
-        .map_err(|e| LoadError::CompilationFailed(lang, e.to_string()))?;
+    let result = compile_to_c_with_extra(
+        &source,
+        &output_dir,
+        &options.compile_args,
+        &options.link_args,
+    )
+    .map_err(|e| LoadError::CompilationFailed(lang, e.to_string()))?;
+
+    let import_source = result.header_path.clone().unwrap_or_else(|| source.clone());
+    let header_content = if import_source
+        .extension()
+        .is_some_and(|ext| matches!(ext.to_str(), Some("h" | "hh" | "hpp" | "hxx")))
+        || options.generate_bindings
+        || !options.consumer_languages.is_empty()
+    {
+        read_header_content(&import_source).ok()
+    } else {
+        None
+    };
+
+    let parsed_header = header_content.as_deref().map(parse_c_header);
+
+    let default_binding_opts = BindingOptions::default();
+    let binding_opts = options
+        .binding_options
+        .as_ref()
+        .unwrap_or(&default_binding_opts);
 
     let bindings = if options.generate_bindings {
-        if let Some(ref header_path) = result.header_path {
-            generate_bindings(
-                header_path,
-                options
-                    .binding_options
-                    .as_ref()
-                    .unwrap_or(&BindingOptions::default()),
-            )
-            .ok()
+        if let (Some(content), Some(header_path)) = (&header_content, result.header_path.as_ref()) {
+            generate_bindings_from_content(header_path, content, binding_opts).ok()
         } else {
             None
         }
@@ -192,14 +207,23 @@ pub fn load_with_options<S: AsRef<Path>>(
         None
     };
 
-    let import_source = result.header_path.clone().unwrap_or_else(|| source.clone());
     let import_options =
         ImportOptions::default().allowlist_functions(export_discovery.exports.clone());
     let mut imports = Vec::new();
     let mut warnings = export_discovery.warnings;
     for language in &options.consumer_languages {
-        let generated = generate_imports(&import_source, *language, &import_options)
-            .map_err(LoadError::ImportFailed)?;
+        let generated = if let Some(parsed) = &parsed_header {
+            crate::imports::generate_imports_from_parsed(
+                &import_source,
+                *language,
+                parsed,
+                &import_options,
+            )
+            .map_err(LoadError::ImportFailed)?
+        } else {
+            generate_imports(&import_source, *language, &import_options)
+                .map_err(LoadError::ImportFailed)?
+        };
         warnings.extend(generated.warnings.clone());
         imports.push(generated);
     }

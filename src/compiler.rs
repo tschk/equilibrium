@@ -66,14 +66,23 @@ pub struct CompileResult {
 
 /// Compile a source file to C intermediate representation.
 pub fn compile_to_c(input: &Path, output_dir: &Path) -> Result<CompileResult, CompileError> {
+    compile_to_c_with_extra(input, output_dir, &[], &[])
+}
+
+/// Compile with extra compiler and link arguments (link args reserved for future link step).
+pub fn compile_to_c_with_extra(
+    input: &Path,
+    output_dir: &Path,
+    compile_args: &[String],
+    _link_args: &[String],
+) -> Result<CompileResult, CompileError> {
     let language = crate::detector::detect_language(input).ok_or_else(|| {
         CompileError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "Unknown source language",
         ))
     })?;
-
-    compile_to_c_with_lang(input, output_dir, language)
+    compile_to_c_with_lang_and_extra(input, output_dir, language, compile_args, _link_args)
 }
 
 /// Compile a source file to C with explicit language.
@@ -81,6 +90,16 @@ pub fn compile_to_c_with_lang(
     input: &Path,
     output_dir: &Path,
     language: Language,
+) -> Result<CompileResult, CompileError> {
+    compile_to_c_with_lang_and_extra(input, output_dir, language, &[], &[])
+}
+
+pub fn compile_to_c_with_lang_and_extra(
+    input: &Path,
+    output_dir: &Path,
+    language: Language,
+    compile_args: &[String],
+    _link_args: &[String],
 ) -> Result<CompileResult, CompileError> {
     if !input.is_file() {
         return Err(CompileError::Io(std::io::Error::new(
@@ -118,7 +137,8 @@ pub fn compile_to_c_with_lang(
     let input_str = input.to_string_lossy();
     let output_str = c_output.to_string_lossy();
 
-    let args = language.to_c_args(&input_str, &output_str);
+    let mut args = language.to_c_args(&input_str, &output_str);
+    args.extend(compile_args.iter().cloned());
 
     let output = Command::new(compiler)
         .args(&args)
@@ -202,15 +222,31 @@ fn generate_header(
     }
 }
 
-/// Compile multiple files to C.
+/// Compile multiple files to C (parallel when `files.len() > 1`).
 pub fn compile_batch(
     files: &[(PathBuf, Language)],
     output_dir: &Path,
 ) -> Vec<Result<CompileResult, CompileError>> {
-    files
-        .iter()
-        .map(|(path, lang)| compile_to_c_with_lang(path, output_dir, *lang))
-        .collect()
+    if files.is_empty() {
+        return Vec::new();
+    }
+    if files.len() == 1 {
+        return vec![compile_to_c_with_lang(&files[0].0, output_dir, files[0].1)];
+    }
+
+    let output_dir = output_dir.to_path_buf();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .iter()
+            .map(|(path, lang)| {
+                let path = path.clone();
+                let output_dir = output_dir.clone();
+                let lang = *lang;
+                scope.spawn(move || compile_to_c_with_lang(&path, &output_dir, lang))
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    })
 }
 
 #[cfg(test)]
