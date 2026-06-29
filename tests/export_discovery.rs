@@ -1,6 +1,6 @@
 use equilibrium_ffi::{
-    discover_exports, discover_exports_with_options, find_compiler, load_with_options,
-    ExportOptions, ExportSource, Language, LoadOptions,
+    discover_exports_with_options, find_compiler, load_with_options, ExportOptions, ExportSource,
+    Language, LoadOptions,
 };
 use tempfile::tempdir;
 
@@ -23,7 +23,8 @@ pub fn helper(a: i32) -> i32 {
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::Rust).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::Rust, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::ExplicitMarkers);
@@ -47,7 +48,8 @@ fn helper(a: i32) i32 {
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::Zig).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::Zig, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::ExplicitMarkers);
@@ -69,7 +71,8 @@ proc helper(a: cint): cint =
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::Nim).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::Nim, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::ExplicitMarkers);
@@ -95,7 +98,8 @@ int helper(int a)
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::D).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::D, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::ExplicitMarkers);
@@ -114,7 +118,8 @@ static int helper(int a);
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::C).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::C, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::ExplicitMarkers);
@@ -138,7 +143,8 @@ pub fn multiply(a: i32, b: i32) -> i32 {
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::Rust).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::Rust, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add", "multiply"]);
     assert_eq!(discovery.source, ExportSource::AllFunctions);
@@ -173,7 +179,8 @@ exports = ["multiply"]
     .unwrap();
 
     let options = ExportOptions::default().exports(["add"]);
-    let discovery = discover_exports_with_options(&source, Language::Rust, &options).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::Rust, &options).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::Requested);
@@ -232,7 +239,8 @@ pub fn label(name: String) -> String {
     )
     .unwrap();
 
-    let discovery = discover_exports(&source, Language::Rust).unwrap();
+    let discovery =
+        discover_exports_with_options(&source, Language::Rust, &ExportOptions::default()).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert!(discovery

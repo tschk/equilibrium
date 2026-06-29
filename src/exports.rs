@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::detector::Language;
+use crate::limits::{read_config_text, read_discovery_source};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExportSource {
@@ -93,10 +94,6 @@ struct FunctionCandidate {
     explicit: bool,
 }
 
-pub fn discover_exports(path: &Path, language: Language) -> Result<ExportDiscovery, ExportError> {
-    discover_exports_with_options(path, language, &ExportOptions::default())
-}
-
 pub fn discover_exports_with_options(
     path: &Path,
     language: Language,
@@ -118,9 +115,9 @@ pub fn discover_exports_with_options(
         });
     }
 
-    let content = std::fs::read_to_string(path).map_err(|error| ExportError::Io {
+    let content = read_discovery_source(path).map_err(|message| ExportError::Config {
         path: path.to_path_buf(),
-        error,
+        message,
     })?;
     let candidates = language_candidates(language, &content);
     let explicit: Vec<FunctionCandidate> =
@@ -152,9 +149,9 @@ fn config_exports(
             continue;
         }
         let config_text =
-            std::fs::read_to_string(&config_path).map_err(|error| ExportError::Io {
+            read_config_text(&config_path).map_err(|message| ExportError::Config {
                 path: config_path.clone(),
-                error,
+                message,
             })?;
         let config: EquilibriumConfig =
             toml::from_str(&config_text).map_err(|error| ExportError::Config {
@@ -193,7 +190,7 @@ fn config_candidates(source: &Path, options: &ExportOptions) -> Vec<PathBuf> {
 
 fn target_matches(target: &TargetConfig, source: &Path, base: &Path, language: Language) -> bool {
     if let Some(target_language) = &target.language {
-        if target_language.to_ascii_lowercase() != language_name(language) {
+        if target_language.to_ascii_lowercase() != language.cli_name() {
             return false;
         }
     }
@@ -210,21 +207,6 @@ fn target_matches(target: &TargetConfig, source: &Path, base: &Path, language: L
             .unwrap_or_else(|_| candidate_path.clone());
         canonical_candidate == canonical_source || candidate_path == source
     })
-}
-
-fn language_name(language: Language) -> &'static str {
-    match language {
-        Language::V => "v",
-        Language::Zig => "zig",
-        Language::C => "c",
-        Language::Cpp => "cpp",
-        Language::CSharp => "csharp",
-        Language::Rust => "rust",
-        Language::D => "d",
-        Language::Nim => "nim",
-        Language::Odin => "odin",
-        Language::Hare => "hare",
-    }
 }
 
 fn language_candidates(language: Language, content: &str) -> Vec<FunctionCandidate> {

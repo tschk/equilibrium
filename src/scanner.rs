@@ -3,7 +3,6 @@
 //! Scans directories for C headers, generates bindings for all discovered
 //! libraries, and creates a unified module structure for frictionless imports.
 
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,8 +32,6 @@ pub struct AutoBindingOptions {
     pub exclude_patterns: Vec<String>,
     /// Whether to generate a unified mod.rs that re-exports everything
     pub generate_mod_rs: bool,
-    /// Custom binding options per library (by library name)
-    pub custom_options: HashMap<String, BindingOptions>,
     /// Default binding options for all libraries
     pub default_binding_options: BindingOptions,
 }
@@ -50,7 +47,6 @@ impl Default for AutoBindingOptions {
                 "test_*.h".to_string(),
             ],
             generate_mod_rs: true,
-            custom_options: HashMap::new(),
             default_binding_options: BindingOptions::default(),
         }
     }
@@ -216,12 +212,7 @@ impl LibraryScanner {
         let mut mod_declarations = Vec::new();
 
         for discovery in discoveries {
-            let binding_opts = self
-                .options
-                .custom_options
-                .get(&discovery.name)
-                .cloned()
-                .unwrap_or_else(|| self.options.default_binding_options.clone());
+            let binding_opts = self.options.default_binding_options.clone();
 
             // Generate bindings for EACH header file (not just the main one)
             for header in &discovery.headers {

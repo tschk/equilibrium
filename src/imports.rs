@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::c_header::{header_stem, is_c_abi_safe_type, parse_c_header, FunctionDef};
+use crate::c_header::{header_stem, is_c_abi_safe_type, parse_c_header, FunctionDef, ParsedHeader};
 use crate::detector::Language;
+use crate::limits::read_header_content;
 
 #[derive(Clone, Debug, Default)]
 pub struct ImportOptions {
@@ -32,13 +33,21 @@ pub fn generate_imports(
     language: Language,
     options: &ImportOptions,
 ) -> Result<GeneratedImport, String> {
-    let content =
-        std::fs::read_to_string(header).map_err(|e| format!("Failed to read header: {e}"))?;
-    let parsed = parse_c_header(&content);
+    let content = read_header_content(header)?;
+    generate_imports_from_parsed(header, language, &parse_c_header(&content), options)
+}
+
+pub fn generate_imports_from_parsed(
+    header: &Path,
+    language: Language,
+    parsed: &ParsedHeader,
+    options: &ImportOptions,
+) -> Result<GeneratedImport, String> {
     let mut functions = Vec::new();
     let mut warnings = Vec::new();
 
-    for function in parsed.functions {
+    for function in &parsed.functions {
+        let function = function.clone();
         if !options.allowlist_functions.is_empty()
             && !options
                 .allowlist_functions
