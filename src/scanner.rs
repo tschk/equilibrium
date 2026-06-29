@@ -106,38 +106,6 @@ impl LibraryScanner {
                     }
                 }
             } else if path.is_dir() && self.options.recursive {
-                // Check if this directory contains headers (it's a library)
-                let subheaders: Vec<PathBuf> = fs::read_dir(&path)
-                    .ok()
-                    .map(|entries| {
-                        entries
-                            .filter_map(|e| e.ok())
-                            .filter(|e| {
-                                e.path().extension().is_some_and(|ext| ext == "h")
-                                    && !self.should_exclude(&e.path())
-                            })
-                            .map(|e| e.path())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-
-                if !subheaders.is_empty() {
-                    // This subdirectory is a library
-                    let lib_name = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown")
-                        .to_string();
-
-                    discoveries.push(LibraryDiscovery {
-                        name: lib_name,
-                        root: path.clone(),
-                        headers: subheaders.clone(),
-                        main_header: self.find_main_header(&subheaders),
-                    });
-                }
-
-                // Continue scanning subdirectories
                 self.scan_directory(&path, discoveries)?;
             }
         }
