@@ -179,8 +179,7 @@ exports = ["multiply"]
     .unwrap();
 
     let options = ExportOptions::default().exports(["add"]);
-    let discovery =
-        discover_exports_with_options(&source, Language::Rust, &options).unwrap();
+    let discovery = discover_exports_with_options(&source, Language::Rust, &options).unwrap();
 
     assert_eq!(discovery.exports, vec!["add"]);
     assert_eq!(discovery.source, ExportSource::Requested);
