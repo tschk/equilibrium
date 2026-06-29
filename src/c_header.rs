@@ -1,6 +1,5 @@
 use std::path::Path;
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct ParsedHeader {
     pub(crate) typedefs: Vec<TypedefDef>,
@@ -9,21 +8,18 @@ pub(crate) struct ParsedHeader {
     pub(crate) functions: Vec<FunctionDef>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct TypedefDef {
     pub(crate) name: String,
     pub(crate) target: String,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct StructDef {
     pub(crate) name: String,
     pub(crate) fields: Vec<(String, String)>,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub(crate) struct EnumDef {
     pub(crate) name: String,
