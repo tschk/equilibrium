@@ -397,6 +397,9 @@ impl PkgMgr {
 
     /// Whether this manager needs sudo on Linux
     fn needs_sudo(self) -> bool {
+        if std::env::var_os("EQ_INSTALL_NO_SUDO").is_some() {
+            return false;
+        }
         matches!(self, PkgMgr::Apt | PkgMgr::Dnf | PkgMgr::Pacman)
     }
 }

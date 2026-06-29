@@ -39,6 +39,10 @@ eq generate mylib.h --consumer all --out-dir generated-imports
 
 Multiple compilers install in parallel.
 
+### Security (dev tool)
+
+Equilibrium runs **your** compilers on **your** source paths (`load`, `eq generate`, `compile_to_c`). Treat paths like a build script: only trusted trees; shared CI should not point at arbitrary uploads. Compiler binaries come from `PATH` (and `eq`’s extra search dirs)—use a known-good toolchain. `eq install` may invoke `sudo` with apt/dnf/pacman; set `EQ_INSTALL_NO_SUDO=1` to skip those managers. Header/source reads are capped (10 MB headers, 64 MB discovery sources) to limit accidental DoS.
+
 ## Quick Start
 
 ```rust

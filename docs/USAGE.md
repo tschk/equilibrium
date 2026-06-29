@@ -2,6 +2,10 @@
 
 Complete guide to using equilibrium for polyglot FFI.
 
+## Trust boundary
+
+Equilibrium is a **local dev/build** tool: it executes compilers and reads source/header files you point at. Use only trusted project trees; do not run `load` or `eq generate` on untrusted paths in shared CI. Compilers are resolved via `PATH` (and `eq check` extra dirs). Reads are size-limited (headers 10 MB / 200k lines; export discovery sources 64 MB; config 1 MB).
+
 ## Table of Contents
 
 1. [Quick Start](#quick-start)
