@@ -147,12 +147,18 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=foreign-code/zig_module.zig");
 
-    // ── Nim module ────────────────────────────────────────────────────────────
-    let nim_path = PathBuf::from("/opt/homebrew/bin/nim");
-    if nim_path.exists() {
+    // ── Nim module (when nim is on PATH) ─────────────────────────────────────
+    if let Some(nim) = find_bin(
+        "nim",
+        &[
+            "/home/linuxbrew/.linuxbrew/bin/nim",
+            "/usr/local/bin/nim",
+            "/opt/homebrew/bin/nim",
+        ],
+    ) {
         let lib = out_dir.join("nim_module.a");
         let nimcache = out_dir.join("nim_cache");
-        let mut cmd = Command::new(&nim_path);
+        let mut cmd = Command::new(&nim);
         cmd.args([
             "c",
             &format!("--nimcache:{}", nimcache.display()),
