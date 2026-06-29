@@ -21,31 +21,6 @@ module equilibrium;
  */
 struct ffi {}
 
-/**
- * Mixin template to generate extern(C) wrappers for all @ffi functions
- */
-mixin template FFI()
-{
-    // This would require compile-time reflection in D
-    // For now, we provide the attribute and users apply extern(C) manually
-}
-
-/**
- * Helper: Export a function with C linkage
- */
-template ExportC(alias func)
-{
-    extern(C) export auto ExportC = func;
-}
-
-/**
- * Example: Simple wrapper macro
- */
-string ffiWrap(string funcDecl)()
-{
-    return "extern(C) export " ~ funcDecl;
-}
-
 // Example usage
 version(Demo)
 {

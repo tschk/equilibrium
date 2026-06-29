@@ -13,20 +13,8 @@
 ##   proc add*(a, b: cint): cint {.exportc, cdecl, dynlib.} =
 ##     return a + b
 
-import macros
-
 template ffi*() {.pragma.}
-  ## Mark a procedure for FFI export to equilibrium.
-  ## Automatically applies exportc, cdecl, and dynlib pragmas.
-
-macro processFfi*(): untyped =
-  ## Process all procedures marked with {.ffi.} pragma
-  result = newStmtList()
-
-# Alternative: direct pragma expansion
-template ffiExport*(procName: untyped): untyped =
-  ## Export a procedure for FFI with proper C linkage
-  {.exportc: astToStr(procName), cdecl.}
+  ## Mark a procedure for FFI export; use {.exportc, cdecl.} on the proc body.
 
 # Type conversion helpers
 proc toCInt*(x: int): cint {.inline.} =

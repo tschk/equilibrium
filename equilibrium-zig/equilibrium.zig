@@ -10,18 +10,7 @@
 //!       return a + b;
 //!   }
 //!
-//! Or use the helper:
-//!   pub const add = eq.exportC(addImpl);
-//!   fn addImpl(a: i32, b: i32) i32 {
-//!       return a + b;
-//!   }
-
 const std = @import("std");
-
-/// Export a function with C linkage
-pub fn exportC(comptime func: anytype) @TypeOf(func) {
-    return func;
-}
 
 /// Type conversion helpers
 pub const FFI = struct {
