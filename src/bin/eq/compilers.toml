@@ -1,0 +1,125 @@
+# eq compiler catalogue — edit here instead of eq.rs
+
+[[compiler]]
+id = "zig"
+lang = "Zig"
+bin = "zig"
+extra_paths = [
+  "/usr/local/sbin",
+  "/usr/local/bin",
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+]
+version_args = ["version"]
+[compiler.install]
+brew = "zig"
+apt = "zig"
+dnf = "zig"
+pacman = "zig"
+winget = "zig.zig"
+scoop = "zig"
+manual = "https://ziglang.org/download/"
+
+[[compiler]]
+id = "nim"
+lang = "Nim"
+bin = "nim"
+extra_paths = [
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+]
+version_args = ["--version"]
+[compiler.install]
+brew = "nim"
+apt = "nim"
+dnf = "nim"
+pacman = "nim"
+winget = "nim.nim"
+scoop = "nim"
+manual = "https://nim-lang.org/install.html"
+
+[[compiler]]
+id = "v"
+lang = "V"
+bin = "v"
+extra_paths = [
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+]
+version_args = ["version"]
+[compiler.install]
+brew = "vlang"
+pacman = "vlang"
+scoop = "v"
+manual = "https://vlang.io/"
+
+[[compiler]]
+id = "d"
+lang = "D (ldc2)"
+bin = "ldc2"
+extra_paths = [
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+]
+version_args = ["--version"]
+[compiler.install]
+brew = "ldc"
+apt = "ldc"
+dnf = "ldc"
+pacman = "ldc"
+scoop = "ldc"
+manual = "https://github.com/ldc-developers/ldc/releases"
+
+[[compiler]]
+id = "odin"
+lang = "Odin"
+bin = "odin"
+extra_paths = [
+  "/usr/local/bin",
+  "/usr/local/odin",
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+]
+version_args = ["version"]
+[compiler.install]
+brew = "odin"
+pacman = "odin"
+winget = "odin-lang.Odin"
+scoop = "odin"
+scoop_bucket = "versions"
+manual = "https://odin-lang.org/docs/install/"
+
+[[compiler]]
+id = "hare"
+lang = "Hare"
+bin = "hare"
+extra_paths = ["/usr/local/bin", "/usr/bin"]
+version_args = ["version"]
+linux_only = true
+[compiler.install]
+apt = "hare"
+dnf = "hare"
+pacman = "hare"
+manual = "https://harelang.org/"
+
+[[compiler]]
+id = "dotnet"
+lang = "C# (dotnet)"
+bin = "dotnet"
+extra_paths = [
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+  "C:\\Program Files\\dotnet",
+]
+version_args = ["--version"]
+[compiler.install]
+brew = "dotnet"
+apt = "dotnet-sdk-9.0"
+dnf = "dotnet-sdk-9.0"
+pacman = "dotnet-sdk"
+winget = "Microsoft.DotNet.SDK.9"
+scoop = "dotnet-sdk"
+manual = "https://dot.net/"

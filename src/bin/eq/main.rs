@@ -14,6 +14,9 @@ use equilibrium_ffi::{compiler_version_at, find_binary};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+mod catalog;
+use catalog::{compilers, extra_path_refs, version_arg_refs, Compiler, Install};
+
 // ── CLI definition ────────────────────────────────────────────────────────────
 
 #[derive(Parser)]
@@ -54,217 +57,23 @@ enum Cmd {
     },
 }
 
-// ── Compiler catalogue ────────────────────────────────────────────────────────
+// ── Compiler detection (catalog: src/bin/compilers.toml) ───────────────────
 
-struct Compiler {
-    /// Short id used on the command line
-    id: &'static str,
-    /// Human-readable language name
-    lang: &'static str,
-    /// Binary to look for
-    bin: &'static str,
-    /// Extra PATH entries to search beyond $PATH
-    extra_paths: &'static [&'static str],
-    /// Args to pass for version query
-    version_args: &'static [&'static str],
-    /// Install recipe
-    install: Install,
-    /// Whether this compiler is supported on this platform at all
-    supported: bool,
-}
-
-/// Per-package-manager package names.
-/// Empty string means "not available via this manager".
-struct Install {
-    /// brew / wax package name (same namespace)
-    brew: &'static str,
-    /// apt package name (Debian/Ubuntu)
-    apt: &'static str,
-    /// dnf package name (Fedora/RHEL)
-    dnf: &'static str,
-    /// pacman package name (Arch)
-    pacman: &'static str,
-    /// winget package ID (used with `winget install -e --id <id>`)
-    winget: &'static str,
-    /// scoop package name
-    scoop: &'static str,
-    /// scoop bucket to add before installing (empty = main, no add needed)
-    scoop_bucket: &'static str,
-    /// Manual install URL (always shown as last resort)
-    manual: &'static str,
-}
-
-const COMPILERS: &[Compiler] = &[
-    Compiler {
-        id: "zig",
-        lang: "Zig",
-        bin: "zig",
-        extra_paths: &[
-            "/usr/local/sbin",
-            "/usr/local/bin",
-            "/home/linuxbrew/.linuxbrew/bin",
-            "/opt/homebrew/bin",
-        ],
-        version_args: &["version"],
-        install: Install {
-            brew: "zig",
-            apt: "zig",
-            dnf: "zig",
-            pacman: "zig",
-            winget: "zig.zig",
-            scoop: "zig",
-            scoop_bucket: "",
-            manual: "https://ziglang.org/download/",
-        },
-        supported: true,
-    },
-    Compiler {
-        id: "nim",
-        lang: "Nim",
-        bin: "nim",
-        extra_paths: &[
-            "/home/linuxbrew/.linuxbrew/bin",
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-        ],
-        version_args: &["--version"],
-        install: Install {
-            brew: "nim",
-            apt: "nim",
-            dnf: "nim",
-            pacman: "nim",
-            winget: "nim.nim",
-            scoop: "nim",
-            scoop_bucket: "",
-            manual: "https://nim-lang.org/install.html",
-        },
-        supported: true,
-    },
-    Compiler {
-        id: "v",
-        lang: "V",
-        bin: "v",
-        extra_paths: &[
-            "/home/linuxbrew/.linuxbrew/bin",
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-        ],
-        version_args: &["version"],
-        install: Install {
-            brew: "vlang",
-            apt: "",
-            dnf: "",
-            pacman: "vlang",
-            winget: "", // not in winget catalog
-            scoop: "v", // scoop main bucket: package is named "v"
-            scoop_bucket: "",
-            manual: "https://vlang.io/",
-        },
-        supported: true,
-    },
-    Compiler {
-        id: "d",
-        lang: "D (ldc2)",
-        bin: "ldc2",
-        extra_paths: &[
-            "/home/linuxbrew/.linuxbrew/bin",
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-        ],
-        version_args: &["--version"],
-        install: Install {
-            brew: "ldc",
-            apt: "ldc",
-            dnf: "ldc",
-            pacman: "ldc",
-            winget: "",   // not in winget catalog
-            scoop: "ldc", // scoop main bucket
-            scoop_bucket: "",
-            manual: "https://github.com/ldc-developers/ldc/releases",
-        },
-        supported: true,
-    },
-    Compiler {
-        id: "odin",
-        lang: "Odin",
-        bin: "odin",
-        extra_paths: &[
-            "/usr/local/bin",
-            "/usr/local/odin",
-            "/home/linuxbrew/.linuxbrew/bin",
-            "/opt/homebrew/bin",
-        ],
-        version_args: &["version"],
-        install: Install {
-            brew: "odin",
-            apt: "",
-            dnf: "",
-            pacman: "odin",
-            winget: "odin-lang.Odin",
-            scoop: "odin", // scoop versions bucket
-            scoop_bucket: "versions",
-            manual: "https://odin-lang.org/docs/install/",
-        },
-        supported: true,
-    },
-    Compiler {
-        id: "hare",
-        lang: "Hare",
-        bin: "hare",
-        extra_paths: &["/usr/local/bin", "/usr/bin"],
-        version_args: &["version"],
-        install: Install {
-            brew: "",
-            apt: "hare",
-            dnf: "hare",
-            pacman: "hare",
-            winget: "",
-            scoop: "",
-            scoop_bucket: "",
-            manual: "https://harelang.org/",
-        },
-        supported: cfg!(target_os = "linux"),
-    },
-    Compiler {
-        id: "dotnet",
-        lang: "C# (dotnet)",
-        bin: "dotnet",
-        extra_paths: &[
-            "/home/linuxbrew/.linuxbrew/bin",
-            "/opt/homebrew/bin",
-            r"C:\Program Files\dotnet",
-        ],
-        version_args: &["--version"],
-        install: Install {
-            brew: "dotnet",
-            apt: "dotnet-sdk-9.0",
-            dnf: "dotnet-sdk-9.0",
-            pacman: "dotnet-sdk",
-            winget: "Microsoft.DotNet.SDK.9",
-            scoop: "dotnet-sdk",
-            scoop_bucket: "",
-            manual: "https://dot.net/",
-        },
-        supported: true,
-    },
-];
-
-// ── Compiler detection ────────────────────────────────────────────────────────
-
-struct Status<'a> {
-    compiler: &'a Compiler,
+struct Status {
+    compiler: &'static Compiler,
     path: Option<PathBuf>,
     version: Option<String>,
 }
 
-fn check_all() -> Vec<Status<'static>> {
-    COMPILERS
+fn check_all() -> Vec<Status> {
+    let catalog = compilers();
+    catalog
         .iter()
         .map(|c| {
-            let path = find_binary(c.bin, c.extra_paths);
-            let version = path
-                .as_deref()
-                .and_then(|p| compiler_version_at(p, c.version_args));
+            let extra = extra_path_refs(&c.extra_paths);
+            let path = find_binary(&c.bin, &extra);
+            let vargs = version_arg_refs(&c.version_args);
+            let version = path.as_deref().and_then(|p| compiler_version_at(p, &vargs));
             Status {
                 compiler: c,
                 path,
@@ -337,14 +146,14 @@ impl PkgMgr {
         }
     }
 
-    fn pkg_name(self, install: &Install) -> &'static str {
+    fn pkg_name(self, install: &Install) -> &str {
         match self {
-            PkgMgr::Wax | PkgMgr::Brew => install.brew,
-            PkgMgr::Apt => install.apt,
-            PkgMgr::Dnf => install.dnf,
-            PkgMgr::Pacman => install.pacman,
-            PkgMgr::Winget => install.winget,
-            PkgMgr::Scoop => install.scoop,
+            PkgMgr::Wax | PkgMgr::Brew => install.brew.as_str(),
+            PkgMgr::Apt => install.apt.as_str(),
+            PkgMgr::Dnf => install.dnf.as_str(),
+            PkgMgr::Pacman => install.pacman.as_str(),
+            PkgMgr::Winget => install.winget.as_str(),
+            PkgMgr::Scoop => install.scoop.as_str(),
         }
     }
 
@@ -460,7 +269,7 @@ fn install_compiler(c: &Compiler) -> bool {
 
         // Scoop: add non-main bucket if required (idempotent)
         if *mgr == PkgMgr::Scoop && !c.install.scoop_bucket.is_empty() {
-            let bucket = c.install.scoop_bucket;
+            let bucket = c.install.scoop_bucket.as_str();
             let bucket_cmd = format!("scoop bucket add {bucket}");
             println!("  {} {}", style("$").dim(), style(&bucket_cmd).cyan());
             let scoop_bin = find_binary("scoop", &[]).unwrap_or_else(|| PathBuf::from("scoop"));
@@ -512,7 +321,7 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
     let statuses = check_all();
 
     if !names.is_empty() {
-        let mut to_install: Vec<&'static Compiler> = vec![];
+        let mut to_install: Vec<&'static Compiler> = Vec::new();
         let mut had_error = false;
 
         for name in &names {
@@ -615,7 +424,7 @@ fn run_installs_parallel(compilers: &[&'static Compiler]) -> ExitCode {
         .iter()
         .map(|c| {
             let log = Arc::clone(&log);
-            let name = c.lang;
+            let name = c.lang.as_str();
             let compiler: &'static Compiler = c;
             thread::spawn(move || {
                 let ok = install_compiler(compiler);

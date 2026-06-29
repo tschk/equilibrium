@@ -21,7 +21,7 @@ tempfile = "3"
 
 [[bin]]
 name = "eq"
-path = "src/bin/eq.rs"
+path = "src/bin/eq/main.rs"
 required-features = ["cli"]
 
 [features]
