@@ -29,15 +29,19 @@ mod compiler;
 mod detector;
 mod exports;
 mod imports;
+mod limits;
 mod loader;
 mod scanner;
 
-pub use bindings::{generate_bindings, BindingOptions, GeneratedBinding};
-pub use compiler::{compile_batch, compile_to_c, CompileError, CompileResult};
+pub use bindings::{
+    generate_bindings, generate_bindings_from_content, BindingOptions, GeneratedBinding,
+};
+pub use compiler::{
+    compile_batch, compile_to_c, compile_to_c_with_extra, CompileError, CompileResult,
+};
 pub use detector::{detect_language, find_compiler, scan_directory, Language, LanguageInfo};
 pub use exports::{
-    discover_exports, discover_exports_with_options, ExportDiscovery, ExportError, ExportOptions,
-    ExportSource,
+    discover_exports_with_options, ExportDiscovery, ExportError, ExportOptions, ExportSource,
 };
 pub use imports::{generate_imports, GeneratedImport, ImportOptions};
 pub use loader::{load, load_with_options, LoadError, LoadOptions, LoadedModule};
