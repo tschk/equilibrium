@@ -1,6 +1,7 @@
 //! Language detection for source files.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Supported languages that can be compiled to C.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -233,46 +234,66 @@ pub fn detect_language(path: &Path) -> Option<Language> {
     None
 }
 
+/// Resolve a compiler binary on `PATH` or under `extra_paths`.
+pub fn find_binary(bin: &str, extra_paths: &[&str]) -> Option<PathBuf> {
+    which::which(bin).ok().or_else(|| {
+        extra_paths
+            .iter()
+            .map(|p| PathBuf::from(p).join(bin))
+            .find(|p| p.exists())
+    })
+}
+
+/// Query version string using compiler-specific args (e.g. `zig version`).
+pub fn compiler_version_at(path: &Path, version_args: &[&str]) -> Option<String> {
+    let out = Command::new(path).args(version_args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let text = if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    };
+    let line = text.lines().next()?.trim();
+    let line = if line.starts_with('/') || line.starts_with(r"C:\") {
+        line.split_once(' ').map(|x| x.1).unwrap_or(line).trim()
+    } else {
+        line
+    }
+    .to_string();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line)
+    }
+}
+
 /// Check if a compiler is available on the system.
 pub fn find_compiler(language: Language) -> Option<LanguageInfo> {
     let compiler_name = language.default_compiler();
 
-    // Check primary compiler
-    if which::which(compiler_name).is_ok() {
+    if let Some(path) = find_binary(compiler_name, &[]) {
         return Some(LanguageInfo {
             language,
             compiler: Some(compiler_name.to_string()),
-            version: get_compiler_version(compiler_name),
+            version: compiler_version_at(&path, &["--version"]),
         });
     }
 
-    // Try alternatives
     for alt in language.alternative_compilers() {
-        if which::which(alt).is_ok() {
+        if let Some(path) = find_binary(alt, &[]) {
             return Some(LanguageInfo {
                 language,
                 compiler: Some((*alt).to_string()),
-                version: get_compiler_version(alt),
+                version: compiler_version_at(&path, &["--version"]),
             });
         }
     }
 
     None
-}
-
-fn get_compiler_version(compiler: &str) -> Option<String> {
-    let output = std::process::Command::new(compiler)
-        .arg("--version")
-        .output()
-        .ok()?;
-
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Get first line
-        stdout.lines().next().map(|s| s.to_string())
-    } else {
-        None
-    }
 }
 
 /// Scan a directory and detect all source files with their languages.

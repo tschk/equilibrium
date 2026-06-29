@@ -10,6 +10,7 @@
 use clap::{Parser, Subcommand};
 use console::{style, Style, Term};
 use dialoguer::{theme::ColorfulTheme, MultiSelect};
+use equilibrium_ffi::{compiler_version_at, find_binary};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -250,42 +251,6 @@ const COMPILERS: &[Compiler] = &[
 
 // ── Compiler detection ────────────────────────────────────────────────────────
 
-fn find_bin(bin: &str, extra_paths: &[&str]) -> Option<PathBuf> {
-    which::which(bin).ok().or_else(|| {
-        extra_paths
-            .iter()
-            .map(|p| PathBuf::from(p).join(bin))
-            .find(|p| p.exists())
-    })
-}
-
-fn compiler_version(path: &Path, version_args: &[&str]) -> Option<String> {
-    let out = Command::new(path).args(version_args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let text = if stdout.trim().is_empty() {
-        stderr
-    } else {
-        stdout
-    };
-    let line = text.lines().next()?.trim();
-    // Strip a leading absolute-path token some compilers (odin) emit
-    let line = if line.starts_with('/') || line.starts_with(r"C:\") {
-        line.split_once(' ').map(|x| x.1).unwrap_or(line).trim()
-    } else {
-        line
-    }
-    .to_string();
-    if line.is_empty() {
-        None
-    } else {
-        Some(line)
-    }
-}
-
 struct Status<'a> {
     compiler: &'a Compiler,
     path: Option<PathBuf>,
@@ -296,10 +261,10 @@ fn check_all() -> Vec<Status<'static>> {
     COMPILERS
         .iter()
         .map(|c| {
-            let path = find_bin(c.bin, c.extra_paths);
+            let path = find_binary(c.bin, c.extra_paths);
             let version = path
                 .as_deref()
-                .and_then(|p| compiler_version(p, c.version_args));
+                .and_then(|p| compiler_version_at(p, c.version_args));
             Status {
                 compiler: c,
                 path,
@@ -498,7 +463,7 @@ fn install_compiler(c: &Compiler) -> bool {
             let bucket = c.install.scoop_bucket;
             let bucket_cmd = format!("scoop bucket add {bucket}");
             println!("  {} {}", style("$").dim(), style(&bucket_cmd).cyan());
-            let scoop_bin = find_bin("scoop", &[]).unwrap_or_else(|| PathBuf::from("scoop"));
+            let scoop_bin = find_binary("scoop", &[]).unwrap_or_else(|| PathBuf::from("scoop"));
             let _ = Command::new(&scoop_bin)
                 .args(["bucket", "add", bucket])
                 .status();
@@ -518,7 +483,7 @@ fn install_compiler(c: &Compiler) -> bool {
         } else {
             // Resolve full path for wax/brew/winget in case they aren't on PATH
             let home = std::env::var("HOME").unwrap_or_default();
-            let bin = find_bin(
+            let bin = find_binary(
                 mgr.cmd(),
                 &[
                     "/home/linuxbrew/.linuxbrew/bin",

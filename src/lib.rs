@@ -39,7 +39,10 @@ pub use bindings::{
 pub use compiler::{
     compile_batch, compile_to_c, compile_to_c_with_extra, CompileError, CompileResult,
 };
-pub use detector::{detect_language, find_compiler, scan_directory, Language, LanguageInfo};
+pub use detector::{
+    compiler_version_at, detect_language, find_binary, find_compiler, scan_directory, Language,
+    LanguageInfo,
+};
 pub use exports::{
     discover_exports_with_options, ExportDiscovery, ExportError, ExportOptions, ExportSource,
 };
