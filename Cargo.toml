@@ -4,7 +4,7 @@ authors = ["Max Carter <max@undivisible.dev>"]
 version = "0.1.3"
 edition = "2021"
 description = "Automatic C FFI generation for C-compiling languages (V, Zig, C++, C#, Rust, D, Nim, Odin) (unstable and in development)"
-license = "MPL-2.0"
+license = "ISC"
 repository = "https://github.com/tschk/equilibrium"
 exclude = ["AGENTS.md"]
 

@@ -3,7 +3,7 @@ name = "equilibrium-rust"
 version = "0.1.0"
 edition = "2021"
 description = "Ergonomic FFI exports for equilibrium-ffi (Rust side)"
-license = "MPL-2.0"
+license = "ISC"
 
 [lib]
 proc-macro = true
