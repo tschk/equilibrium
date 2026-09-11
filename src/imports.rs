@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use crate::c_header::{header_stem, is_c_abi_safe_type, parse_c_header, FunctionDef, ParsedHeader};
+use crate::c_header::{
+    header_stem, is_c_abi_safe_type, is_c_identifier, parse_c_header, FunctionDef, ParsedHeader,
+};
 use crate::detector::Language;
 use crate::limits::read_header_content;
 
@@ -76,11 +78,12 @@ pub fn generate_imports_from_parsed(
 }
 
 fn supports_import(function: &FunctionDef) -> bool {
-    is_c_abi_safe_type(&function.return_type)
+    is_c_identifier(&function.name)
+        && is_c_abi_safe_type(&function.return_type)
         && function
             .params
             .iter()
-            .all(|(param_type, _)| is_c_abi_safe_type(param_type))
+            .all(|(param_type, name)| is_c_identifier(name) && is_c_abi_safe_type(param_type))
 }
 
 fn render_imports(
