@@ -99,13 +99,33 @@ impl LibraryScanner {
             let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
             let path = entry.path();
 
-            if path.is_file() {
+            let file_type = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_file() {
                 if let Some(ext) = path.extension() {
                     if ext == "h" && !self.should_exclude(&path) {
                         headers.push(path);
                     }
                 }
-            } else if path.is_dir() && self.options.recursive {
+            } else if file_type.is_dir() && self.options.recursive {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if matches!(
+                    name,
+                    "target"
+                        | "node_modules"
+                        | ".git"
+                        | "build"
+                        | "dist"
+                        | "zig-cache"
+                        | "nimcache"
+                ) {
+                    continue;
+                }
                 self.scan_directory(&path, discoveries)?;
             }
         }
@@ -352,6 +372,21 @@ mod tests {
         let headers = &discoveries[0].headers;
         assert_eq!(headers.len(), 1);
         assert!(headers[0].ends_with("api.h"));
+    }
+
+    #[test]
+    fn test_scan_skips_target_and_git_dirs() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("generated.h"), "int skip(void);").unwrap();
+        fs::write(dir.path().join("api.h"), "int add(int a, int b);").unwrap();
+
+        let scanner = LibraryScanner::new(dir.path());
+        let discoveries = scanner.scan().unwrap();
+        assert_eq!(discoveries.len(), 1);
+        assert_eq!(discoveries[0].headers.len(), 1);
+        assert!(discoveries[0].headers[0].ends_with("api.h"));
     }
 
     #[test]

@@ -304,7 +304,15 @@ pub fn scan_directory(dir: &Path) -> Vec<(std::path::PathBuf, Language)> {
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.is_dir() {
+                let file_type = match entry.file_type() {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                // Do not follow directory symlinks (avoids cycles and unexpected trees).
+                if file_type.is_symlink() {
+                    continue;
+                }
+                if file_type.is_dir() {
                     // Skip common non-source directories
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if !matches!(
@@ -493,5 +501,19 @@ mod tests {
         let results = scan_directory(dir.path());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, Language::Zig);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_scan_directory_skips_symlinked_dirs() {
+        let dir = tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("lib.c"), "").unwrap();
+        std::os::unix::fs::symlink(&real, dir.path().join("link")).unwrap();
+
+        let results = scan_directory(dir.path());
+        assert_eq!(results.len(), 1);
+        assert!(results[0].0.ends_with("lib.c"));
     }
 }
