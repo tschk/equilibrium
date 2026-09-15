@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Fast reconnect/repair after orb pause. Do not install packages here.
+set -euo pipefail
+
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export PATH="${CARGO_HOME}/bin:${PATH}"
+
+if [ -f "${CARGO_HOME}/env" ]; then
+  # shellcheck disable=SC1091
+  source "${CARGO_HOME}/env"
+fi
+
+if ! command -v rustc >/dev/null 2>&1; then
+  echo "[resume] rustc missing from PATH; run .agents/setup" >&2
+  exit 1
+fi
+
+if ! command -v cc >/dev/null 2>&1 && ! command -v gcc >/dev/null 2>&1; then
+  echo "[resume] C compiler missing; run .agents/setup" >&2
+  exit 1
+fi

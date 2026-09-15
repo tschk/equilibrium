@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Fresh-orb bootstrap for equilibrium-ffi (Rust library + optional eq CLI).
+set -euo pipefail
+
+log() { printf '[setup] %s\n' "$*"; }
+step() {
+  local label="$1"
+  shift
+  local start
+  start="$(date +%s)"
+  log "start: ${label}"
+  "$@"
+  log "done: ${label} ($(( $(date +%s) - start ))s)"
+}
+
+need_apt() {
+  local pkg
+  for pkg in "$@"; do
+    if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+if need_apt build-essential ca-certificates curl pkg-config; then
+  step "apt-get update" sudo apt-get update -qq
+  step "apt install build tools" sudo apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl pkg-config
+else
+  log "apt packages already present"
+fi
+
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export PATH="${CARGO_HOME}/bin:${PATH}"
+
+if ! command -v rustup >/dev/null 2>&1; then
+  step "install rustup" bash -c 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal'
+else
+  log "rustup already installed"
+fi
+# shellcheck disable=SC1091
+source "${CARGO_HOME}/env"
+
+step "ensure stable toolchain" rustup toolchain install stable --profile minimal --no-self-update
+step "ensure rustfmt+clippy" rustup component add rustfmt clippy --toolchain stable
+
+# Persist PATH for later non-interactive login shells (Amp / services).
+profile_marker="# equilibrium-ffi rustup PATH"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+  cat >> "$HOME/.bash_profile" <<EOF
+
+$profile_marker
+if [ -f "\$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  . "\$HOME/.cargo/env"
+fi
+EOF
+  log "appended rustup env to ~/.bash_profile"
+else
+  log "rustup PATH already in ~/.bash_profile"
+fi
+
+if [ -f Cargo.toml ]; then
+  # This crate gitignores Cargo.lock (library crate); fetch latest resolved graph.
+  step "cargo fetch" cargo fetch
+fi
+
+log "rustc=$(command -v rustc) $(rustc --version)"
+log "cargo=$(command -v cargo) $(cargo --version)"
+log "cc=$(command -v cc || true)"
