@@ -15,7 +15,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       
       - name: Setup Equilibrium
         uses: tschk/equilibrium/.github/actions/setup-equilibrium@main
@@ -52,7 +52,7 @@ jobs:
 
 ## Supported Compilers
 
-- **Zig**: Installed via goto-bus-stop/setup-zig@v2
+- **Zig**: Installed via mlugg/setup-zig@v2
 - **Nim**: Installed via apt (Ubuntu) or brew (macOS)
 - **D (LDC)**: Installed via apt (Ubuntu) or brew (macOS)
 - **C/C++**: Already available on all platforms
