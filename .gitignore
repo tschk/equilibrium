@@ -1,9 +1,11 @@
 /target
 Cargo.lock
 .DS_Store
+.amp/portals/*
 equilibrium-rust/target
 examples/*/target
 examples/*/native
+examples/*/build
 examples/c-ffi/build
 examples/c-ffi/*.so
 examples/c-ffi/*.dylib
