@@ -245,7 +245,16 @@ pub fn compile_batch(
                 scope.spawn(move || compile_to_c_with_lang(&path, &output_dir, lang))
             })
             .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    Err(CompileError::Io(std::io::Error::other(
+                        "compile_batch worker thread panicked",
+                    )))
+                })
+            })
+            .collect()
     })
 }
 
