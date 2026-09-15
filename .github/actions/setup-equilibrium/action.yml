@@ -33,20 +33,14 @@ runs:
       uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ inputs.rust-version }}
-    
+
     - name: Cache cargo
       if: inputs.cache == 'true'
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-equilibrium-${{ hashFiles('**/Cargo.lock') }}
-    
+      uses: Swatinem/rust-cache@v2
+
     - name: Install Zig
       if: inputs.install-zig == 'true'
-      uses: goto-bus-stop/setup-zig@v2
+      uses: mlugg/setup-zig@v2
       with:
         version: 0.13.0
     
