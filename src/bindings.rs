@@ -3,7 +3,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::c_header::{
-    c_type_to_rust, parse_c_header, EnumDef, FunctionDef, ParsedHeader, StructDef, TypedefDef,
+    c_type_to_rust_checked, parse_c_header, parse_enum_discriminant, rust_ident, EnumDef,
+    FunctionDef, ParsedHeader, StructDef, TypedefDef,
 };
 use crate::limits::read_header_content;
 
@@ -99,15 +100,19 @@ fn emit_bindings_from_parsed(
 ) {
     for enum_def in &parsed.enums {
         if should_include(&enum_def.name, &options.allowlist_types) {
-            code.push_str(&generate_enum(enum_def, options));
-            code.push('\n');
+            if let Some(generated) = generate_enum(enum_def, warnings) {
+                code.push_str(&generated);
+                code.push('\n');
+            }
         }
     }
 
     for struct_def in &parsed.structs {
         if should_include(&struct_def.name, &options.allowlist_types) {
-            code.push_str(&generate_struct(struct_def, options));
-            code.push('\n');
+            if let Some(generated) = generate_struct(struct_def, options, warnings) {
+                code.push_str(&generated);
+                code.push('\n');
+            }
         }
     }
 
@@ -124,8 +129,10 @@ fn emit_bindings_from_parsed(
                     .iter()
                     .any(|e| format!("enum {}", e.name) == typedef.target);
             if !is_struct_alias && !is_enum_alias {
-                code.push_str(&generate_typedef(typedef, options));
-                code.push('\n');
+                if let Some(generated) = generate_typedef(typedef, warnings) {
+                    code.push_str(&generated);
+                    code.push('\n');
+                }
             }
         }
     }
@@ -134,7 +141,10 @@ fn emit_bindings_from_parsed(
     code.push_str("extern \"C\" {\n");
     for func in &parsed.functions {
         if should_include(&func.name, &options.allowlist_functions) {
-            code.push_str(&generate_function(func));
+            match generate_function(func) {
+                Ok(generated) => code.push_str(&generated),
+                Err(reason) => warnings.push(reason),
+            }
         } else {
             warnings.push(format!("Skipped function: {}", func.name));
         }
@@ -142,28 +152,73 @@ fn emit_bindings_from_parsed(
     code.push_str("}\n");
 }
 
-fn generate_typedef(typedef: &TypedefDef, _options: &BindingOptions) -> String {
-    let rust_type = c_type_to_rust(&typedef.target);
-    format!("pub type {} = {};\n", typedef.name, rust_type)
+fn generate_typedef(typedef: &TypedefDef, warnings: &mut Vec<String>) -> Option<String> {
+    let Some(name) = rust_ident(&typedef.name) else {
+        warnings.push(format!(
+            "Skipped typedef with invalid name: {}",
+            typedef.name
+        ));
+        return None;
+    };
+    match c_type_to_rust_checked(&typedef.target) {
+        Ok(rust_type) => Some(format!("pub type {name} = {rust_type};\n")),
+        Err(reason) => {
+            warnings.push(format!("Skipped typedef {name}: {reason}"));
+            None
+        }
+    }
 }
 
-fn generate_enum(enum_def: &EnumDef, _options: &BindingOptions) -> String {
+fn generate_enum(enum_def: &EnumDef, warnings: &mut Vec<String>) -> Option<String> {
+    let Some(name) = rust_ident(&enum_def.name) else {
+        warnings.push(format!("Skipped enum with invalid name: {}", enum_def.name));
+        return None;
+    };
     let mut code = String::new();
     code.push_str("#[repr(C)]\n");
     code.push_str("#[derive(Debug, Copy, Clone, PartialEq, Eq)]\n");
-    code.push_str(&format!("pub enum {} {{\n", enum_def.name));
+    code.push_str(&format!("pub enum {name} {{\n"));
+    let mut any = false;
     for (variant_name, variant_value) in &enum_def.variants {
+        let Some(variant) = rust_ident(variant_name) else {
+            warnings.push(format!(
+                "Skipped enum variant with invalid name: {variant_name}"
+            ));
+            continue;
+        };
         if let Some(value) = variant_value {
-            code.push_str(&format!("    {} = {},\n", variant_name, value));
+            let Some(n) = parse_enum_discriminant(value) else {
+                warnings.push(format!(
+                    "Skipped enum discriminant for {name}::{variant}: `{value}`"
+                ));
+                continue;
+            };
+            code.push_str(&format!("    {variant} = {n},\n"));
         } else {
-            code.push_str(&format!("    {},\n", variant_name));
+            code.push_str(&format!("    {variant},\n"));
         }
+        any = true;
+    }
+    if !any {
+        warnings.push(format!("Skipped empty enum: {name}"));
+        return None;
     }
     code.push_str("}\n");
-    code
+    Some(code)
 }
 
-fn generate_struct(struct_def: &StructDef, options: &BindingOptions) -> String {
+fn generate_struct(
+    struct_def: &StructDef,
+    options: &BindingOptions,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let Some(name) = rust_ident(&struct_def.name) else {
+        warnings.push(format!(
+            "Skipped struct with invalid name: {}",
+            struct_def.name
+        ));
+        return None;
+    };
     let mut code = String::new();
     let mut derives = vec!["Copy", "Clone"];
     if options.derive_debug {
@@ -174,33 +229,49 @@ fn generate_struct(struct_def: &StructDef, options: &BindingOptions) -> String {
     }
     code.push_str(&format!("#[derive({})]\n", derives.join(", ")));
     code.push_str("#[repr(C)]\n");
-    code.push_str(&format!("pub struct {} {{\n", struct_def.name));
+    code.push_str(&format!("pub struct {name} {{\n"));
     for (field_type, field_name) in &struct_def.fields {
-        let rust_type = c_type_to_rust(field_type);
-        code.push_str(&format!("    pub {}: {},\n", field_name, rust_type));
+        let Some(field) = rust_ident(field_name) else {
+            warnings.push(format!(
+                "Skipped field with invalid name on {name}: {field_name}"
+            ));
+            continue;
+        };
+        match c_type_to_rust_checked(field_type) {
+            Ok(rust_type) => {
+                code.push_str(&format!("    pub {field}: {rust_type},\n"));
+            }
+            Err(reason) => {
+                warnings.push(format!("Skipped field {name}.{field}: {reason}"));
+            }
+        }
     }
     code.push_str("}\n");
-    code
+    Some(code)
 }
 
-fn generate_function(func: &FunctionDef) -> String {
-    let rust_return = c_type_to_rust(&func.return_type);
-    let params: Vec<String> = func
-        .params
-        .iter()
-        .map(|(typ, name)| format!("{}: {}", name, c_type_to_rust(typ)))
-        .collect();
+fn generate_function(func: &FunctionDef) -> Result<String, String> {
+    let name = rust_ident(&func.name)
+        .ok_or_else(|| format!("Skipped function with invalid name: {}", func.name))?;
+    let rust_return = c_type_to_rust_checked(&func.return_type)
+        .map_err(|reason| format!("Skipped function {name}: {reason}"))?;
+    let mut params = Vec::new();
+    for (typ, param_name) in &func.params {
+        let pname = rust_ident(param_name)
+            .ok_or_else(|| format!("Skipped function {name}: invalid parameter `{param_name}`"))?;
+        let rust_type = c_type_to_rust_checked(typ)
+            .map_err(|reason| format!("Skipped function {name}: {reason}"))?;
+        params.push(format!("{pname}: {rust_type}"));
+    }
     let return_clause = if rust_return == "()" {
         String::new()
     } else {
-        format!(" -> {}", rust_return)
+        format!(" -> {rust_return}")
     };
-    format!(
-        "    pub fn {}({}){};\n",
-        func.name,
+    Ok(format!(
+        "    pub fn {name}({}){return_clause};\n",
         params.join(", "),
-        return_clause
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -382,5 +453,71 @@ mod tests {
         let binding = generate_bindings(&header, &opts).unwrap();
         assert!(binding.code.contains("pub type handle_t = c_int;"));
         assert!(binding.code.contains("pub fn open()"));
+    }
+
+    #[test]
+    fn test_generate_bindings_rejects_malicious_enum_discriminant() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("evil.h");
+        std::fs::write(
+            &header,
+            "typedef enum { OK = 1, BAD = 1; include!(\"/tmp/pwn.rs\"); 0 } Evil;\nint foo(void);\n",
+        )
+        .unwrap();
+
+        let opts = BindingOptions::default();
+        let binding = generate_bindings(&header, &opts).unwrap();
+        assert!(!binding.code.contains("include!"));
+        assert!(!binding.code.contains("/tmp/pwn"));
+        assert!(binding.code.contains("pub fn foo()"));
+        assert!(binding
+            .warnings
+            .iter()
+            .any(|w| w.contains("discriminant") || w.contains("Skipped")));
+    }
+
+    #[test]
+    fn test_generate_bindings_char_double_pointer() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("argv.h");
+        std::fs::write(&header, "int count_args(char **argv);\n").unwrap();
+
+        let opts = BindingOptions::default();
+        let binding = generate_bindings(&header, &opts).unwrap();
+        assert!(
+            binding.code.contains("*mut *mut c_char"),
+            "got: {}",
+            binding.code
+        );
+        assert!(binding.warnings.is_empty(), "{:?}", binding.warnings);
+    }
+
+    #[test]
+    fn test_generate_bindings_skips_multiline_prototype() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("multi.h");
+        std::fs::write(
+            &header,
+            "int sneaky(\n    int a,\n    int b);\nint ok(void);\n",
+        )
+        .unwrap();
+
+        let opts = BindingOptions::default();
+        let binding = generate_bindings(&header, &opts).unwrap();
+        assert!(!binding.code.contains("sneaky"));
+        assert!(binding.code.contains("pub fn ok()"));
+    }
+
+    #[test]
+    fn test_generate_bindings_skips_unknown_type_passthrough() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("weird.h");
+        std::fs::write(&header, "void evil(not a type x);\nint ok(void);\n").unwrap();
+
+        let opts = BindingOptions::default();
+        let binding = generate_bindings(&header, &opts).unwrap();
+        assert!(!binding.code.contains("not a type"));
+        assert!(!binding.code.contains("pub fn evil("));
+        assert!(binding.code.contains("pub fn ok()"));
     }
 }

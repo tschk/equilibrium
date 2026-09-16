@@ -278,8 +278,132 @@ pub(crate) fn c_type_to_rust(c_type: &str) -> String {
             }
         }
         s if s.starts_with("const ") => c_type_to_rust(s.strip_prefix("const ").unwrap()),
-        other => other.to_string(),
+        other if is_c_identifier(other) => other.to_string(),
+        _ => "*mut c_void".to_string(),
     }
+}
+
+pub(crate) fn c_type_to_rust_checked(c_type: &str) -> Result<String, String> {
+    let mapped = c_type_to_rust(c_type);
+    let trimmed = c_type.trim();
+    if mapped == "*mut c_void"
+        && trimmed != "void *"
+        && trimmed != "void*"
+        && !trimmed.ends_with("void *")
+        && !trimmed.ends_with("void*")
+        && !is_known_or_ident_type(trimmed)
+    {
+        return Err(format!("unsupported C type `{trimmed}`"));
+    }
+    Ok(mapped)
+}
+
+fn is_known_or_ident_type(c_type: &str) -> bool {
+    let c_type = c_type.trim();
+    if c_type.ends_with('*') {
+        return is_known_or_ident_type(c_type.strip_suffix('*').unwrap().trim());
+    }
+    if let Some(inner) = c_type.strip_prefix("const ") {
+        return is_known_or_ident_type(inner);
+    }
+    is_c_abi_safe_scalar(c_type) || is_c_identifier(c_type)
+}
+
+pub(crate) fn is_c_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+pub(crate) fn rust_ident(name: &str) -> Option<String> {
+    if !is_c_identifier(name) {
+        return None;
+    }
+    if is_rust_keyword(name) {
+        Some(format!("r#{name}"))
+    } else {
+        Some(name.to_string())
+    }
+}
+
+fn is_rust_keyword(name: &str) -> bool {
+    matches!(
+        name,
+        "as" | "async"
+            | "await"
+            | "break"
+            | "const"
+            | "continue"
+            | "crate"
+            | "dyn"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "self"
+            | "Self"
+            | "static"
+            | "struct"
+            | "super"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+            | "gen"
+    )
+}
+
+pub(crate) fn parse_enum_discriminant(value: &str) -> Option<i64> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(hex) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        return i64::from_str_radix(hex, 16).ok();
+    }
+    if value.starts_with('+') || value.starts_with('-') {
+        return value.parse().ok();
+    }
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return value.parse().ok();
+    }
+    None
 }
 
 pub(crate) fn is_c_abi_safe_type(c_type: &str) -> bool {
@@ -290,9 +414,18 @@ pub(crate) fn is_c_abi_safe_type(c_type: &str) -> bool {
     if c_type.starts_with("struct ") || c_type.starts_with("enum ") {
         return false;
     }
-    if c_type.ends_with('*') {
-        return true;
+    if let Some(inner) = c_type.strip_suffix('*') {
+        let inner = inner.trim();
+        let inner = inner.strip_prefix("const ").unwrap_or(inner).trim();
+        if inner == "void" {
+            return true;
+        }
+        return is_c_abi_safe_type(inner);
     }
+    is_c_abi_safe_scalar(c_type)
+}
+
+fn is_c_abi_safe_scalar(c_type: &str) -> bool {
     matches!(
         c_type,
         "void"

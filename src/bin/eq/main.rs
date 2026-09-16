@@ -9,8 +9,9 @@
 
 use clap::{Parser, Subcommand};
 use console::{style, Style, Term};
-use dialoguer::{theme::ColorfulTheme, MultiSelect};
+use dialoguer::{theme::ColorfulTheme, Confirm, MultiSelect};
 use equilibrium_ffi::{compiler_version_at, find_binary};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
@@ -164,7 +165,15 @@ impl PkgMgr {
             PkgMgr::Dnf => vec!["install".into(), "-y".into(), pkg.into()],
             PkgMgr::Pacman => vec!["-S".into(), "--noconfirm".into(), pkg.into()],
             // -e = exact match; --id avoids interactive prompts
-            PkgMgr::Winget => vec!["install".into(), "-e".into(), "--id".into(), pkg.into()],
+            PkgMgr::Winget => vec![
+                "install".into(),
+                "-e".into(),
+                "--id".into(),
+                pkg.into(),
+                "--accept-package-agreements".into(),
+                "--accept-source-agreements".into(),
+                "--disable-interactivity".into(),
+            ],
             PkgMgr::Scoop => vec!["install".into(), pkg.into()],
         }
     }
@@ -231,9 +240,7 @@ fn available_managers() -> Vec<PkgMgr> {
     v
 }
 
-fn install_compiler(c: &Compiler) -> bool {
-    // On Windows, if the process cwd is a UNC path (e.g. \\wsl$\...) then
-    // cmd.exe subprocesses spawned by winget/scoop will fail. Move to %TEMP%.
+fn install_cwd() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         let cwd = std::env::current_dir()
@@ -244,10 +251,20 @@ fn install_compiler(c: &Compiler) -> bool {
             let tmp = std::env::var("TEMP")
                 .or_else(|_| std::env::var("TMP"))
                 .unwrap_or_else(|_| r"C:\Windows\Temp".to_string());
-            let _ = std::env::set_current_dir(&tmp);
+            return Some(PathBuf::from(tmp));
         }
     }
+    None
+}
 
+fn spawn_status(mut cmd: Command) -> std::io::Result<std::process::ExitStatus> {
+    if let Some(dir) = install_cwd() {
+        cmd.current_dir(dir);
+    }
+    cmd.status()
+}
+
+fn install_compiler(c: &Compiler) -> bool {
     let managers = available_managers();
     if managers.is_empty() {
         println!(
@@ -273,9 +290,9 @@ fn install_compiler(c: &Compiler) -> bool {
             let bucket_cmd = format!("scoop bucket add {bucket}");
             println!("  {} {}", style("$").dim(), style(&bucket_cmd).cyan());
             let scoop_bin = find_binary("scoop", &[]).unwrap_or_else(|| PathBuf::from("scoop"));
-            let _ = Command::new(&scoop_bin)
-                .args(["bucket", "add", bucket])
-                .status();
+            let mut bucket_add = Command::new(&scoop_bin);
+            bucket_add.args(["bucket", "add", bucket]);
+            let _ = spawn_status(bucket_add);
         }
 
         let args = mgr.install_args(pkg);
@@ -288,7 +305,9 @@ fn install_compiler(c: &Compiler) -> bool {
 
         let status = if mgr.needs_sudo() {
             // Use argv directly — never invoke a shell around sudo/package managers.
-            Command::new("sudo").arg(mgr.cmd()).args(&args).status()
+            let mut cmd = Command::new("sudo");
+            cmd.arg(mgr.cmd()).args(&args);
+            spawn_status(cmd)
         } else {
             // Resolve full path for wax/brew/winget in case they aren't on PATH
             let home = std::env::var("HOME").unwrap_or_default();
@@ -301,7 +320,9 @@ fn install_compiler(c: &Compiler) -> bool {
                 ],
             )
             .unwrap_or_else(|| PathBuf::from(mgr.cmd()));
-            Command::new(bin).args(&args).status()
+            let mut cmd = Command::new(bin);
+            cmd.args(&args);
+            spawn_status(cmd)
         };
 
         if status.map(|s| s.success()).unwrap_or(false) {
@@ -325,12 +346,7 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
         let mut had_error = false;
 
         for name in &names {
-            let name_lower = name.to_lowercase();
-            if let Some(s) = statuses.iter().find(|s| {
-                s.compiler.id == name_lower
-                    || s.compiler.bin == name_lower
-                    || s.compiler.lang.to_lowercase().contains(&name_lower)
-            }) {
+            if let Some(s) = statuses.iter().find(|s| compiler_matches(s.compiler, name)) {
                 if !s.compiler.supported {
                     println!(
                         "{} {} is not supported on this platform.",
@@ -349,6 +365,9 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
                 }
             } else {
                 println!("{} Unknown compiler: {name}", style("✗").red());
+                if name.eq_ignore_ascii_case("c") {
+                    println!("  C (clang/gcc) is assumed present. For C#, use: eq install dotnet");
+                }
                 had_error = true;
             }
         }
@@ -360,7 +379,11 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
                 ExitCode::SUCCESS
             };
         }
-        let install_ok = run_installs_parallel(&to_install);
+        if !confirm_privileged_install() {
+            println!("Aborted.");
+            return ExitCode::FAILURE;
+        }
+        let install_ok = run_installs(&to_install);
         return if had_error {
             ExitCode::FAILURE
         } else {
@@ -397,7 +420,11 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
         Ok(Some(chosen)) if !chosen.is_empty() => {
             let selected: Vec<&'static Compiler> =
                 chosen.iter().map(|&i| missing[i].compiler).collect();
-            run_installs_parallel(&selected)
+            if !confirm_privileged_install() {
+                println!("Aborted.");
+                return ExitCode::FAILURE;
+            }
+            run_installs(&selected)
         }
         _ => {
             println!("Nothing selected.");
@@ -406,44 +433,55 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
     }
 }
 
-/// Install multiple compilers in parallel, one thread each.
-fn run_installs_parallel(compilers: &[&'static Compiler]) -> ExitCode {
-    use std::sync::{Arc, Mutex};
-    use std::thread;
+fn compiler_matches(c: &Compiler, name: &str) -> bool {
+    let n = name.to_lowercase();
+    c.id.eq_ignore_ascii_case(&n)
+        || c.bin.eq_ignore_ascii_case(&n)
+        || c.lang.eq_ignore_ascii_case(name)
+        || (c.id == "dotnet" && matches!(n.as_str(), "csharp" | "c#" | "cs"))
+}
 
+fn sudo_may_be_used() -> bool {
+    available_managers().iter().any(|mgr| mgr.needs_sudo())
+}
+
+fn confirm_privileged_install() -> bool {
+    if !sudo_may_be_used() {
+        return true;
+    }
+    if std::env::var_os("EQ_INSTALL_YES").is_some() {
+        return true;
+    }
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "{} refusing to run sudo without a TTY. Re-run interactively, or set EQ_INSTALL_YES=1 (or EQ_INSTALL_NO_SUDO=1 to skip system package managers).",
+            style("!").yellow()
+        );
+        return false;
+    }
+    Confirm::with_theme(&ColorfulTheme::default())
+        .with_prompt("Installing system packages requires sudo. Continue?")
+        .default(false)
+        .interact()
+        .unwrap_or(false)
+}
+
+fn run_installs(compilers: &[&'static Compiler]) -> ExitCode {
     println!(
-        "\n{} Installing {} compiler(s) in parallel…\n",
+        "\n{} Installing {} compiler(s)…\n",
         style("→").cyan(),
         compilers.len()
     );
 
-    // Shared output buffer so lines from different threads don't interleave.
-    let log: Arc<Mutex<Vec<(String, bool)>>> = Arc::new(Mutex::new(vec![]));
-
-    let handles: Vec<_> = compilers
-        .iter()
-        .map(|c| {
-            let log = Arc::clone(&log);
-            let name = c.lang.as_str();
-            let compiler: &'static Compiler = c;
-            thread::spawn(move || {
-                let ok = install_compiler(compiler);
-                let msg = if ok {
-                    format!("{} {} installed", style("✓").green(), name)
-                } else {
-                    format!("{} {} failed", style("✗").red(), name)
-                };
-                log.lock().unwrap().push((msg, ok));
-                ok
-            })
-        })
-        .collect();
-
-    let all_ok = handles.into_iter().all(|h| h.join().unwrap_or(false));
-
-    println!();
-    for (msg, _) in log.lock().unwrap().iter() {
-        println!("{msg}");
+    let mut all_ok = true;
+    for compiler in compilers {
+        let ok = install_compiler(compiler);
+        if ok {
+            println!("{} {} installed", style("✓").green(), compiler.lang);
+        } else {
+            println!("{} {} failed", style("✗").red(), compiler.lang);
+            all_ok = false;
+        }
     }
 
     if all_ok {

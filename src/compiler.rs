@@ -22,6 +22,8 @@ pub enum CompileError {
     Io(std::io::Error),
     /// Language doesn't support C output.
     UnsupportedCOutput { language: Language },
+    /// Extra compiler/link argument was rejected.
+    InvalidExtraArg { arg: String },
 }
 
 impl std::fmt::Display for CompileError {
@@ -36,6 +38,9 @@ impl std::fmt::Display for CompileError {
             CompileError::Io(e) => write!(f, "IO error: {}", e),
             CompileError::UnsupportedCOutput { language } => {
                 write!(f, "{:?} doesn't support direct C output", language)
+            }
+            CompileError::InvalidExtraArg { arg } => {
+                write!(f, "rejected extra compiler argument: {arg}")
             }
         }
     }
@@ -119,10 +124,17 @@ pub fn compile_to_c_with_lang_and_extra(
         )));
     }
 
+    std::fs::create_dir_all(output_dir)?;
+    validate_extra_args(compile_args)?;
+
     // Find compiler
     let info = find_compiler(language).ok_or(CompileError::CompilerNotFound { language })?;
 
-    let compiler = info.compiler.as_ref().unwrap();
+    let compiler = info
+        .compiler_path
+        .clone()
+        .or_else(|| info.compiler.as_ref().map(PathBuf::from))
+        .ok_or(CompileError::CompilerNotFound { language })?;
 
     // Determine output file name
     let stem = input
@@ -130,7 +142,7 @@ pub fn compile_to_c_with_lang_and_extra(
         .and_then(|s| s.to_str())
         .unwrap_or("output");
 
-    let c_output = output_dir.join(format!("{stem}.c"));
+    let c_output = output_dir.join(artifact_filename(language, stem));
     let header_output = output_dir.join(format!("{stem}.h"));
 
     // Build command
@@ -140,7 +152,7 @@ pub fn compile_to_c_with_lang_and_extra(
     let mut args = language.to_c_args(&input_str, &output_str);
     args.extend(compile_args.iter().cloned());
 
-    let output = Command::new(compiler)
+    let output = Command::new(&compiler)
         .args(&args)
         .current_dir(input.parent().unwrap_or(Path::new(".")))
         .output()?;
@@ -155,21 +167,167 @@ pub fn compile_to_c_with_lang_and_extra(
         });
     }
 
+    let output_path = if c_output.exists() {
+        c_output
+    } else {
+        let alt = output_dir.join(format!("lib{stem}.a"));
+        if alt.exists() {
+            alt
+        } else {
+            return Err(CompileError::CompilationFailed {
+                stderr: format!(
+                    "compiler succeeded but output is missing: {} (stderr: {stderr})",
+                    c_output.display()
+                ),
+                exit_code: output.status.code(),
+            });
+        }
+    };
+
     // Check if header was generated (language-specific)
     let header_path = if header_output.exists() {
         Some(header_output)
+    } else if let Some(copied) = copy_sibling_header(input, output_dir) {
+        Some(copied)
     } else {
         // Try to generate header for some languages
         generate_header(input, output_dir, language).ok()
     };
 
     Ok(CompileResult {
-        output_path: c_output,
+        output_path,
         header_path,
         language,
         stdout,
         stderr,
     })
+}
+
+fn artifact_filename(language: Language, stem: &str) -> String {
+    match language {
+        Language::C
+        | Language::Cpp
+        | Language::Zig
+        | Language::D
+        | Language::Odin
+        | Language::Hare => format!("{stem}.o"),
+        Language::V => format!("{stem}.c"),
+        Language::Nim => format!("{stem}.a"),
+        Language::CSharp => format!("{stem}.dll"),
+        Language::Rust => {
+            if cfg!(target_os = "windows") {
+                format!("{stem}.dll")
+            } else if cfg!(target_os = "macos") {
+                format!("{stem}.dylib")
+            } else {
+                format!("{stem}.so")
+            }
+        }
+    }
+}
+
+fn copy_sibling_header(input: &Path, output_dir: &Path) -> Option<PathBuf> {
+    let header = input.with_extension("h");
+    if !header.is_file() {
+        return None;
+    }
+    let dest = output_dir.join(header.file_name()?);
+    std::fs::copy(&header, &dest).ok()?;
+    Some(dest)
+}
+
+pub(crate) fn validate_extra_args(args: &[String]) -> Result<(), CompileError> {
+    for arg in args {
+        if !extra_compile_arg_allowed(arg) {
+            return Err(CompileError::InvalidExtraArg { arg: arg.clone() });
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn extra_compile_arg_allowed(arg: &str) -> bool {
+    if arg.is_empty() || !arg.is_ascii() {
+        return false;
+    }
+    if arg.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    if arg.starts_with('@') || !arg.starts_with('-') {
+        return false;
+    }
+    if let Some(rest) = arg.strip_prefix("-O") {
+        return rest.chars().all(|c| c.is_ascii_alphanumeric());
+    }
+    let lower = arg.to_ascii_lowercase();
+    const DENY: &[&str] = &[
+        "-fplugin",
+        "-load",
+        "-plugin",
+        "-wl,",
+        "-xlinker",
+        "-wrapper",
+        "-specs",
+        "-b",
+        "-femit-bin",
+        "--output",
+        "-o",
+        "-of",
+    ];
+    for prefix in DENY {
+        if lower == *prefix
+            || lower.starts_with(&format!("{prefix}="))
+            || lower.starts_with(&format!("{prefix}:"))
+        {
+            return false;
+        }
+        if *prefix == "-o" && lower.starts_with("-o") && !lower.starts_with("-objc") {
+            return false;
+        }
+        if *prefix == "-of" && lower.starts_with("-of") {
+            return false;
+        }
+        if *prefix == "-b"
+            && (lower == "-b" || lower.starts_with("-b/") || lower.starts_with("-b="))
+        {
+            return false;
+        }
+    }
+    if arg.starts_with("-I") && arg.len() > 2 {
+        let path = &arg[2..];
+        return !path.contains("..") && path.chars().all(|c| c.is_ascii_graphic());
+    }
+    extra_flag_syntax(arg)
+}
+
+fn extra_flag_syntax(arg: &str) -> bool {
+    let bytes = arg.as_bytes();
+    if bytes.len() < 2 || bytes[0] != b'-' {
+        return false;
+    }
+    let rest = if bytes[1] == b'-' {
+        &arg[2..]
+    } else {
+        &arg[1..]
+    };
+    if rest.is_empty() {
+        return false;
+    }
+    let mut chars = rest.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    let remaining: String = chars.collect();
+    if remaining.is_empty() {
+        return true;
+    }
+    remaining
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '+' | '-' | '=' | ':' | '/'))
+}
+
+pub(crate) fn extra_link_arg_allowed(arg: &str) -> bool {
+    extra_compile_arg_allowed(arg) && (arg.starts_with("-l") || arg.starts_with("-L"))
 }
 
 /// Generate a C header file for the compiled code.
@@ -348,6 +506,40 @@ mod tests {
         if let Err(CompileError::CompilationFailed { stderr, .. }) = result {
             assert!(!stderr.is_empty());
         }
+    }
+
+    #[test]
+    fn test_compile_rejects_plugin_arg() {
+        if find_compiler(Language::C).is_none() {
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let c_file = dir.path().join("test.c");
+        std::fs::write(&c_file, "int add(int a, int b) { return a + b; }\n").unwrap();
+        let output_dir = dir.path().join("out");
+        let err = compile_to_c_with_extra(
+            &c_file,
+            &output_dir,
+            &["-fplugin=/tmp/x.so".to_string()],
+            &[],
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("rejected extra compiler argument"));
+    }
+
+    #[test]
+    fn test_rejects_dangerous_compile_args() {
+        assert!(!extra_compile_arg_allowed("-fplugin=/tmp/x.so"));
+        assert!(!extra_compile_arg_allowed("@response"));
+        assert!(!extra_compile_arg_allowed("-o"));
+        assert!(!extra_compile_arg_allowed("-ofoo.o"));
+        assert!(!extra_compile_arg_allowed("-Wl,-rpath,/tmp"));
+        assert!(!extra_compile_arg_allowed("-fPIC\n-o/tmp/x"));
+        assert!(extra_compile_arg_allowed("-fPIC"));
+        assert!(extra_compile_arg_allowed("-O2"));
+        assert!(extra_compile_arg_allowed("-std=c11"));
+        assert!(extra_compile_arg_allowed("-I/usr/include"));
+        assert!(!extra_compile_arg_allowed("-I../secret"));
     }
 
     #[test]

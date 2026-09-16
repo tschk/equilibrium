@@ -33,6 +33,7 @@ pub enum Language {
 pub struct LanguageInfo {
     pub language: Language,
     pub compiler: Option<String>,
+    pub compiler_path: Option<PathBuf>,
     pub version: Option<String>,
 }
 
@@ -106,7 +107,48 @@ impl Language {
             Language::D => &["dmd", "gdc"],
             Language::C => &["gcc", "cc"],
             Language::Cpp => &["g++", "c++"],
+            Language::CSharp => &["dotnet"],
             _ => &[],
+        }
+    }
+
+    pub fn version_args(&self) -> &'static [&'static str] {
+        match self {
+            Language::Zig | Language::Odin | Language::V | Language::Hare => &["version"],
+            _ => &["--version"],
+        }
+    }
+
+    /// PIC flags for ELF/Mach-O. MSVC clang rejects `-fPIC`.
+    fn pic_c_flag() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("-fPIC")
+        }
+    }
+
+    fn pic_nim_pass_c() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("--passC:-fPIC")
+        }
+    }
+
+    fn pic_d_reloc() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("--relocation-model=pic")
+        }
+    }
+
+    fn pic_odin_reloc() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("-reloc-mode:pic")
         }
     }
 
@@ -123,29 +165,31 @@ impl Language {
             Language::Zig => {
                 // Zig doesn't have direct C output, but we can use translate-c for headers
                 // For actual code, we emit object files
-                vec![
-                    "build-obj".to_string(),
-                    format!("-femit-bin={output}"),
-                    input.to_string(),
-                ]
+                let mut args = vec!["build-obj".to_string()];
+                if let Some(pic) = Self::pic_c_flag() {
+                    args.push(pic.to_string());
+                }
+                args.push("-OReleaseFast".to_string());
+                args.push(format!("-femit-bin={output}"));
+                args.push(input.to_string());
+                args
             }
             Language::C => {
-                // C is already C, just preprocess
-                vec![
-                    "-E".to_string(),
-                    "-o".to_string(),
-                    output.to_string(),
-                    input.to_string(),
-                ]
+                let mut args = vec!["-c".to_string()];
+                if let Some(pic) = Self::pic_c_flag() {
+                    args.push(pic.to_string());
+                }
+                args.extend(["-o".to_string(), output.to_string(), input.to_string()]);
+                args
             }
             Language::Cpp => {
                 // Compile to object, we'll need headers separately
-                vec![
-                    "-c".to_string(),
-                    "-o".to_string(),
-                    output.to_string(),
-                    input.to_string(),
-                ]
+                let mut args = vec!["-c".to_string()];
+                if let Some(pic) = Self::pic_c_flag() {
+                    args.push(pic.to_string());
+                }
+                args.extend(["-o".to_string(), output.to_string(), input.to_string()]);
+                args
             }
             Language::CSharp => {
                 // C# to native requires AOT compilation
@@ -166,31 +210,49 @@ impl Language {
             }
             Language::D => {
                 // D can emit C headers with -HC flag (LDC2)
-                vec![
-                    "-c".to_string(),
-                    "-of".to_string(),
-                    output.to_string(),
+                let mut args = vec!["-c".to_string()];
+                if let Some(pic) = Self::pic_d_reloc() {
+                    args.push(pic.to_string());
+                }
+                args.extend([
+                    format!("-of={output}"),
                     "-HC".to_string(), // Generate C header
                     input.to_string(),
-                ]
+                ]);
+                args
             }
             Language::Nim => {
-                // Nim compiles to C by default
-                vec![
+                let cache = Path::new(output)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join("nimcache");
+                let mut args = vec![
                     "c".to_string(),
-                    "--nimcache:.".to_string(),
-                    format!("-o:{output}"),
-                    input.to_string(),
-                ]
+                    format!("--nimcache:{}", cache.display()),
+                    "--noMain".to_string(),
+                    "--app:staticlib".to_string(),
+                    "--mm:none".to_string(),
+                ];
+                if let Some(pic) = Self::pic_nim_pass_c() {
+                    args.push(pic.to_string());
+                }
+                args.push(format!("-o:{output}"));
+                args.push(input.to_string());
+                args
             }
             Language::Odin => {
                 // Odin compiles to object files
-                vec![
+                let mut args = vec![
                     "build".to_string(),
                     input.to_string(),
-                    "-out:".to_string() + output,
+                    "-file".to_string(),
+                    format!("-out:{output}"),
                     "-build-mode:obj".to_string(),
-                ]
+                ];
+                if let Some(pic) = Self::pic_odin_reloc() {
+                    args.push(pic.to_string());
+                }
+                args
             }
             Language::Hare => {
                 // Hare compiles to object files via QBE
@@ -234,6 +296,14 @@ pub fn detect_language(path: &Path) -> Option<Language> {
     None
 }
 
+const WELL_KNOWN_BIN_DIRS: &[&str] = &[
+    "/home/linuxbrew/.linuxbrew/bin",
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/usr/local/odin",
+];
+
 /// Resolve a compiler binary on `PATH` or under `extra_paths`.
 pub fn find_binary(bin: &str, extra_paths: &[&str]) -> Option<PathBuf> {
     which::which(bin).ok().or_else(|| {
@@ -271,25 +341,27 @@ pub fn compiler_version_at(path: &Path, version_args: &[&str]) -> Option<String>
     }
 }
 
+fn language_info(language: Language, name: &str, path: PathBuf) -> LanguageInfo {
+    let version = compiler_version_at(&path, language.version_args());
+    LanguageInfo {
+        language,
+        compiler: Some(name.to_string()),
+        compiler_path: Some(path),
+        version,
+    }
+}
+
 /// Check if a compiler is available on the system.
 pub fn find_compiler(language: Language) -> Option<LanguageInfo> {
     let compiler_name = language.default_compiler();
 
-    if let Some(path) = find_binary(compiler_name, &[]) {
-        return Some(LanguageInfo {
-            language,
-            compiler: Some(compiler_name.to_string()),
-            version: compiler_version_at(&path, &["--version"]),
-        });
+    if let Some(path) = find_binary(compiler_name, WELL_KNOWN_BIN_DIRS) {
+        return Some(language_info(language, compiler_name, path));
     }
 
     for alt in language.alternative_compilers() {
-        if let Some(path) = find_binary(alt, &[]) {
-            return Some(LanguageInfo {
-                language,
-                compiler: Some((*alt).to_string()),
-                version: compiler_version_at(&path, &["--version"]),
-            });
+        if let Some(path) = find_binary(alt, WELL_KNOWN_BIN_DIRS) {
+            return Some(language_info(language, alt, path));
         }
     }
 
@@ -431,6 +503,7 @@ mod tests {
         );
         let info = info.unwrap();
         assert!(info.compiler.is_some());
+        assert!(info.compiler_path.is_some());
     }
 
     #[test]
@@ -442,19 +515,67 @@ mod tests {
     }
 
     #[test]
-    fn test_to_c_args_c_preprocess() {
-        let args = Language::C.to_c_args("foo.c", "foo.i");
-        assert!(args.contains(&"-E".to_string()));
+    fn test_to_c_args_c_object() {
+        let args = Language::C.to_c_args("foo.c", "foo.o");
+        assert!(args.contains(&"-c".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"-fPIC".to_string()));
+        } else {
+            assert!(args.contains(&"-fPIC".to_string()));
+        }
+        assert!(!args.contains(&"-E".to_string()));
         assert!(args.contains(&"foo.c".to_string()));
-        assert!(args.contains(&"foo.i".to_string()));
+        assert!(args.contains(&"foo.o".to_string()));
     }
 
     #[test]
-    fn test_to_c_args_zig_no_duplicate_flag() {
+    fn test_to_c_args_zig_pic_releasefast() {
         let args = Language::Zig.to_c_args("foo.zig", "foo.o");
         assert!(args.contains(&"build-obj".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"-fPIC".to_string()));
+        } else {
+            assert!(args.contains(&"-fPIC".to_string()));
+        }
+        assert!(args.contains(&"-OReleaseFast".to_string()));
         let femit_count = args.iter().filter(|a| a.starts_with("-femit-bin")).count();
         assert_eq!(femit_count, 1, "should have exactly one -femit-bin flag");
+    }
+
+    #[test]
+    fn test_to_c_args_nim_cache_under_output() {
+        let args = Language::Nim.to_c_args("foo.nim", "/tmp/out/foo.a");
+        assert!(args
+            .iter()
+            .any(|a| a.starts_with("--nimcache:") && a.contains("out")));
+        assert!(!args.iter().any(|a| a == "--nimcache:."));
+        assert!(args.contains(&"--app:staticlib".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"--passC:-fPIC".to_string()));
+        } else {
+            assert!(args.contains(&"--passC:-fPIC".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_to_c_args_odin_pic() {
+        let args = Language::Odin.to_c_args("foo.odin", "foo.o");
+        assert!(args.contains(&"-file".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"-reloc-mode:pic".to_string()));
+        } else {
+            assert!(args.contains(&"-reloc-mode:pic".to_string()));
+        }
+    }
+
+    #[test]
+    fn test_version_args_match_catalogue() {
+        assert_eq!(Language::Zig.version_args(), &["version"]);
+        assert_eq!(Language::Odin.version_args(), &["version"]);
+        assert_eq!(Language::V.version_args(), &["version"]);
+        assert_eq!(Language::Hare.version_args(), &["version"]);
+        assert_eq!(Language::C.version_args(), &["--version"]);
+        assert_eq!(Language::CSharp.alternative_compilers(), &["dotnet"]);
     }
 
     #[test]
