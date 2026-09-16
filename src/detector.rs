@@ -119,6 +119,39 @@ impl Language {
         }
     }
 
+    /// PIC flags for ELF/Mach-O. MSVC clang rejects `-fPIC`.
+    fn pic_c_flag() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("-fPIC")
+        }
+    }
+
+    fn pic_nim_pass_c() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("--passC:-fPIC")
+        }
+    }
+
+    fn pic_d_reloc() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("--relocation-model=pic")
+        }
+    }
+
+    fn pic_odin_reloc() -> Option<&'static str> {
+        if cfg!(windows) {
+            None
+        } else {
+            Some("-reloc-mode:pic")
+        }
+    }
+
     /// Get the command to compile to C intermediate.
     pub fn to_c_args(&self, input: &str, output: &str) -> Vec<String> {
         match self {
@@ -132,32 +165,31 @@ impl Language {
             Language::Zig => {
                 // Zig doesn't have direct C output, but we can use translate-c for headers
                 // For actual code, we emit object files
-                vec![
-                    "build-obj".to_string(),
-                    "-fPIC".to_string(),
-                    "-OReleaseFast".to_string(),
-                    format!("-femit-bin={output}"),
-                    input.to_string(),
-                ]
+                let mut args = vec!["build-obj".to_string()];
+                if let Some(pic) = Self::pic_c_flag() {
+                    args.push(pic.to_string());
+                }
+                args.push("-OReleaseFast".to_string());
+                args.push(format!("-femit-bin={output}"));
+                args.push(input.to_string());
+                args
             }
             Language::C => {
-                vec![
-                    "-c".to_string(),
-                    "-fPIC".to_string(),
-                    "-o".to_string(),
-                    output.to_string(),
-                    input.to_string(),
-                ]
+                let mut args = vec!["-c".to_string()];
+                if let Some(pic) = Self::pic_c_flag() {
+                    args.push(pic.to_string());
+                }
+                args.extend(["-o".to_string(), output.to_string(), input.to_string()]);
+                args
             }
             Language::Cpp => {
                 // Compile to object, we'll need headers separately
-                vec![
-                    "-c".to_string(),
-                    "-fPIC".to_string(),
-                    "-o".to_string(),
-                    output.to_string(),
-                    input.to_string(),
-                ]
+                let mut args = vec!["-c".to_string()];
+                if let Some(pic) = Self::pic_c_flag() {
+                    args.push(pic.to_string());
+                }
+                args.extend(["-o".to_string(), output.to_string(), input.to_string()]);
+                args
             }
             Language::CSharp => {
                 // C# to native requires AOT compilation
@@ -178,40 +210,49 @@ impl Language {
             }
             Language::D => {
                 // D can emit C headers with -HC flag (LDC2)
-                vec![
-                    "-c".to_string(),
-                    "--relocation-model=pic".to_string(),
+                let mut args = vec!["-c".to_string()];
+                if let Some(pic) = Self::pic_d_reloc() {
+                    args.push(pic.to_string());
+                }
+                args.extend([
                     format!("-of={output}"),
                     "-HC".to_string(), // Generate C header
                     input.to_string(),
-                ]
+                ]);
+                args
             }
             Language::Nim => {
                 let cache = Path::new(output)
                     .parent()
                     .unwrap_or_else(|| Path::new("."))
                     .join("nimcache");
-                vec![
+                let mut args = vec![
                     "c".to_string(),
                     format!("--nimcache:{}", cache.display()),
                     "--noMain".to_string(),
                     "--app:staticlib".to_string(),
                     "--mm:none".to_string(),
-                    "--passC:-fPIC".to_string(),
-                    format!("-o:{output}"),
-                    input.to_string(),
-                ]
+                ];
+                if let Some(pic) = Self::pic_nim_pass_c() {
+                    args.push(pic.to_string());
+                }
+                args.push(format!("-o:{output}"));
+                args.push(input.to_string());
+                args
             }
             Language::Odin => {
                 // Odin compiles to object files
-                vec![
+                let mut args = vec![
                     "build".to_string(),
                     input.to_string(),
                     "-file".to_string(),
                     format!("-out:{output}"),
                     "-build-mode:obj".to_string(),
-                    "-reloc-mode:pic".to_string(),
-                ]
+                ];
+                if let Some(pic) = Self::pic_odin_reloc() {
+                    args.push(pic.to_string());
+                }
+                args
             }
             Language::Hare => {
                 // Hare compiles to object files via QBE
@@ -477,7 +518,11 @@ mod tests {
     fn test_to_c_args_c_object() {
         let args = Language::C.to_c_args("foo.c", "foo.o");
         assert!(args.contains(&"-c".to_string()));
-        assert!(args.contains(&"-fPIC".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"-fPIC".to_string()));
+        } else {
+            assert!(args.contains(&"-fPIC".to_string()));
+        }
         assert!(!args.contains(&"-E".to_string()));
         assert!(args.contains(&"foo.c".to_string()));
         assert!(args.contains(&"foo.o".to_string()));
@@ -487,7 +532,11 @@ mod tests {
     fn test_to_c_args_zig_pic_releasefast() {
         let args = Language::Zig.to_c_args("foo.zig", "foo.o");
         assert!(args.contains(&"build-obj".to_string()));
-        assert!(args.contains(&"-fPIC".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"-fPIC".to_string()));
+        } else {
+            assert!(args.contains(&"-fPIC".to_string()));
+        }
         assert!(args.contains(&"-OReleaseFast".to_string()));
         let femit_count = args.iter().filter(|a| a.starts_with("-femit-bin")).count();
         assert_eq!(femit_count, 1, "should have exactly one -femit-bin flag");
@@ -501,14 +550,22 @@ mod tests {
             .any(|a| a.starts_with("--nimcache:") && a.contains("out")));
         assert!(!args.iter().any(|a| a == "--nimcache:."));
         assert!(args.contains(&"--app:staticlib".to_string()));
-        assert!(args.contains(&"--passC:-fPIC".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"--passC:-fPIC".to_string()));
+        } else {
+            assert!(args.contains(&"--passC:-fPIC".to_string()));
+        }
     }
 
     #[test]
     fn test_to_c_args_odin_pic() {
         let args = Language::Odin.to_c_args("foo.odin", "foo.o");
         assert!(args.contains(&"-file".to_string()));
-        assert!(args.contains(&"-reloc-mode:pic".to_string()));
+        if cfg!(windows) {
+            assert!(!args.contains(&"-reloc-mode:pic".to_string()));
+        } else {
+            assert!(args.contains(&"-reloc-mode:pic".to_string()));
+        }
     }
 
     #[test]
