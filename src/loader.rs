@@ -250,8 +250,9 @@ pub fn load_with_options<S: AsRef<Path>>(
         None
     };
 
-    let import_options =
-        ImportOptions::default().allowlist_functions(export_discovery.exports.clone());
+    let import_options = ImportOptions::default()
+        .allowlist_functions(export_discovery.exports.clone())
+        .native_libraries(import_libraries(&result));
     let mut imports = Vec::new();
     let mut warnings = export_discovery.warnings;
     if options.generate_bindings && bindings.is_none() {
@@ -338,6 +339,26 @@ impl std::error::Error for LoadError {}
 fn sibling_header(source: &Path) -> Option<PathBuf> {
     let header = source.with_extension("h");
     header.is_file().then_some(header)
+}
+
+/// The compiled artifact a consumer language should link, when there is one:
+/// scriptc's `--ffi` manifest names it.
+fn import_libraries(result: &CompileResult) -> Vec<PathBuf> {
+    let is_linkable = result
+        .output_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension,
+                "a" | "o" | "obj" | "so" | "dylib" | "dll" | "lib"
+            )
+        });
+    if is_linkable {
+        vec![result.output_path.clone()]
+    } else {
+        Vec::new()
+    }
 }
 
 fn emit_cargo_link(

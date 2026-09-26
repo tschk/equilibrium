@@ -305,23 +305,6 @@ impl Language {
             Language::ScriptC,
         ]
     }
-
-    /// Whether equilibrium can emit a consumer wrapper for this language.
-    ///
-    /// scriptc is a producer only: it calls C through `--ffi` manifests
-    /// instead of generated wrappers, so it has no renderer in `imports`.
-    pub fn supports_imports(&self) -> bool {
-        !matches!(self, Language::ScriptC)
-    }
-
-    /// The languages `eq generate --consumer all` writes wrappers for.
-    pub fn import_targets() -> Vec<Language> {
-        Self::all()
-            .iter()
-            .copied()
-            .filter(Language::supports_imports)
-            .collect()
-    }
 }
 
 /// Detect the language of a source file based on extension.
@@ -551,13 +534,6 @@ mod tests {
     #[test]
     fn test_all_languages() {
         assert_eq!(Language::all().len(), 11);
-    }
-
-    #[test]
-    fn test_import_targets_skip_producer_only_languages() {
-        assert!(!Language::ScriptC.supports_imports());
-        assert!(!Language::import_targets().contains(&Language::ScriptC));
-        assert_eq!(Language::import_targets().len(), Language::all().len() - 1);
     }
 
     #[test]

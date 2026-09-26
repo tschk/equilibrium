@@ -29,6 +29,7 @@ eq generate mylib.h -o src/mylib_ffi.rs
 
 # Generate imports for another language
 eq generate mylib.h --consumer zig -o src/mylib.zig
+eq generate mylib.h --consumer scriptc --out-dir generated   # bindings.ts + the --ffi manifest
 eq generate mylib.h --consumer all --out-dir generated-imports
 ```
 
@@ -194,6 +195,30 @@ export function truncate(value: number): number {
 - Every exported symbol is prefixed with the module stem (`math_add`), and each module gets a private copy of the scriptc runtime, so several compiled modules can coexist in one process.
 - Call `<stem>_init()` once before the exports. Register `<stem>_set_panic_sink()` first if you want trap messages, since an unregistered trap aborts the process, and call `<stem>_collect()` to release buffered `string`/`bytes` results.
 - The generated profile/header are build inputs in the output directory. The default `llvm` emission is scriptc's production lane; switch to `emission = "c"` for scriptc's readable C backend (which accepts the same library-mode profile).
+
+The reverse direction works too: a **TypeScript host can call any library equilibrium has a header for**. `Language::ScriptC` generates a declaration module plus the scriptc `--ffi` manifest that binds it, and `load()` fills the manifest in with the artifact it just compiled:
+
+```rust
+let module = load_with_options(
+    "native/math.c",
+    LoadOptions::default().consumer_languages([Language::ScriptC]),
+)?;
+// module.imports[0].code           -> bindings.ts (`export declare function …`)
+// module.imports[0].companions[0]  -> math.ffi.json naming the compiled archive
+```
+
+```ts
+// host.ts
+import { c_add } from "./bindings";
+
+console.log(c_add(20, 22));
+```
+
+```bash
+scriptc build host.ts --ffi math.ffi.json -o app && ./app
+```
+
+`eq generate math.h --consumer scriptc --out-dir generated` writes the same two files, and `--consumer all` now covers every language including TypeScript. Outbound classes stop at `f64`, `bool`, `u8`, `u32`, `i32`, `string`, `bytes` and `void`, so 64-bit integers, `char *` parameters (scriptc's `cstring` is callback-only), `float`, and pointer or struct returns are skipped with the reason. A `const uint8_t *` + `size_t` pair crosses as one parameter, typed `Uint8Array` by default — name it in `ImportOptions::scriptc_string_spans(["c_greet:name"])` to declare it as UTF-8 `string` instead. Host builds need only scriptc and a platform linker: scriptc's executable lane lowers through its bundled helper, so no C compiler is required for this direction.
 
 ## Installation
 

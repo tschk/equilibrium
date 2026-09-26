@@ -51,6 +51,21 @@ let zig = generate_imports(
 println!("{}", zig.code);
 ```
 
+Most languages get one wrapper file. scriptc is the exception: it reaches C through an `--ffi` manifest, so its bindings come with a companion the manifest names, and `GeneratedImport::companions` carries it:
+
+```rust
+let ts = generate_imports(
+    Path::new("build/mylib.h"),
+    Language::ScriptC,
+    &ImportOptions::default().native_libraries(["build/libmylib.a"]),
+)?;
+
+std::fs::write("generated/bindings.ts", &ts.code)?;
+for companion in &ts.companions {
+    std::fs::write(format!("generated/{}", companion.name), &companion.contents)?;
+}
+```
+
 ## Language Detection
 
 Equilibrium detects languages by file extension:

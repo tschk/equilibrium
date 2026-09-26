@@ -558,7 +558,7 @@ fn cmd_generate(
 ) -> ExitCode {
     if let Some(consumer) = consumer {
         let languages = if consumer.eq_ignore_ascii_case("all") {
-            equilibrium_ffi::Language::import_targets()
+            equilibrium_ffi::Language::all().to_vec()
         } else if let Some(language) = equilibrium_ffi::Language::from_cli_name(&consumer) {
             vec![language]
         } else {
@@ -602,7 +602,7 @@ fn cmd_generate(
 
         if languages.len() == 1 {
             if let Some(generated) = module.imports.into_iter().next() {
-                return write_single_output(generated.code, output);
+                return write_generated_import(&generated, output, out_dir);
             }
             eprintln!("{} no imports generated", style("✗").red());
             return ExitCode::FAILURE;
@@ -619,12 +619,8 @@ fn cmd_generate(
         }
         for generated in module.imports {
             let path = target_dir.join(import_filename(generated.language));
-            if let Err(e) = std::fs::write(&path, generated.code) {
-                eprintln!(
-                    "{} write failed for {}: {e}",
-                    style("✗").red(),
-                    path.display()
-                );
+            if let Err(e) = write_import_files(&generated, &path) {
+                eprintln!("{} {e}", style("✗").red());
                 return ExitCode::FAILURE;
             }
         }
@@ -679,7 +675,7 @@ fn write_generated_imports(
             languages[0],
             &equilibrium_ffi::ImportOptions::default(),
         ) {
-            Ok(generated) => write_single_output(generated.code, output),
+            Ok(generated) => write_generated_import(&generated, output, out_dir),
             Err(e) => {
                 eprintln!("{} import generation failed: {e}", style("✗").red());
                 ExitCode::FAILURE
@@ -710,18 +706,80 @@ fn write_generated_imports(
             }
         };
         let path = target_dir.join(import_filename(generated.language));
-        if let Err(e) = std::fs::write(&path, generated.code) {
-            eprintln!(
-                "{} write failed for {}: {e}",
-                style("✗").red(),
-                path.display()
-            );
+        if let Err(e) = write_import_files(&generated, &path) {
+            eprintln!("{} {e}", style("✗").red());
             return ExitCode::FAILURE;
         }
     }
 
     println!("{} wrote {}", style("✓").green(), target_dir.display());
     ExitCode::SUCCESS
+}
+
+/// Write a generated import to `output`, or to `directory` under the
+/// language's conventional file name, or to stdout when it is a single file.
+fn write_generated_import(
+    generated: &equilibrium_ffi::GeneratedImport,
+    output: Option<PathBuf>,
+    directory: Option<PathBuf>,
+) -> ExitCode {
+    let path = match (output, directory) {
+        (Some(path), _) => Some(path),
+        (None, Some(directory)) => {
+            if let Err(e) = std::fs::create_dir_all(&directory) {
+                eprintln!(
+                    "{} failed to create {}: {e}",
+                    style("✗").red(),
+                    directory.display()
+                );
+                return ExitCode::FAILURE;
+            }
+            Some(directory.join(import_filename(generated.language)))
+        }
+        (None, None) => None,
+    };
+
+    let Some(path) = path else {
+        if !generated.companions.is_empty() {
+            let companions: Vec<&str> = generated
+                .companions
+                .iter()
+                .map(|companion| companion.name.as_str())
+                .collect();
+            eprintln!(
+                "{} {} bindings also need {}; pass --out-dir or -o",
+                style("✗").red(),
+                generated.language.cli_name(),
+                companions.join(", ")
+            );
+            return ExitCode::FAILURE;
+        }
+        print!("{}", generated.code);
+        return ExitCode::SUCCESS;
+    };
+
+    if let Err(e) = write_import_files(generated, &path) {
+        eprintln!("{} {e}", style("✗").red());
+        return ExitCode::FAILURE;
+    }
+    println!("{} wrote {}", style("✓").green(), path.display());
+    ExitCode::SUCCESS
+}
+
+/// Write the bindings and every companion file they need beside them.
+fn write_import_files(
+    generated: &equilibrium_ffi::GeneratedImport,
+    path: &Path,
+) -> Result<(), String> {
+    std::fs::write(path, &generated.code)
+        .map_err(|e| format!("write failed for {}: {e}", path.display()))?;
+    let directory = path.parent().unwrap_or(Path::new("."));
+    for companion in &generated.companions {
+        let companion_path = directory.join(&companion.name);
+        std::fs::write(&companion_path, &companion.contents)
+            .map_err(|e| format!("write failed for {}: {e}", companion_path.display()))?;
+    }
+    Ok(())
 }
 
 fn write_single_output(code: String, output: Option<PathBuf>) -> ExitCode {
@@ -750,9 +808,7 @@ fn import_filename(language: equilibrium_ffi::Language) -> String {
         equilibrium_ffi::Language::Odin => "bindings.odin",
         equilibrium_ffi::Language::Hare => "bindings.ha",
         equilibrium_ffi::Language::V => "bindings.v",
-        // scriptc is a producer only; consumer generation refuses it before
-        // this name is used.
-        equilibrium_ffi::Language::ScriptC => "bindings.d.ts",
+        equilibrium_ffi::Language::ScriptC => "bindings.ts",
     }
     .to_string()
 }
