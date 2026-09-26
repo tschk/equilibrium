@@ -33,6 +33,52 @@ pub(crate) struct FunctionDef {
     pub(crate) params: Vec<(String, String)>,
 }
 
+/// Drop `/* … */` and `//` comments from C source text.
+///
+/// Generated and hand-written headers both annotate declarations
+/// (`/* enrichment */ uint32_t crc32fast_hash(const uint8_t *data, size_t len);`),
+/// and a comment left in the signature text becomes part of the type. Block
+/// comments may span lines; a line comment keeps its newline so the line
+/// structure a caller parses is unchanged.
+pub(crate) fn strip_c_comments(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '/' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek() {
+            Some('*') => {
+                chars.next();
+                let mut closed = false;
+                while let Some(c) = chars.next() {
+                    if c == '*' && matches!(chars.peek(), Some('/')) {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                }
+                if !closed {
+                    // Unterminated: the rest of the text is comment.
+                    break;
+                }
+            }
+            Some('/') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     const MAX_TYPEDEF_BLOCK_LINES: usize = 16_384;
 
@@ -42,10 +88,11 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     let mut functions = Vec::new();
 
     let mut i = 0;
-    let lines: Vec<&str> = content.lines().collect();
+    let stripped = strip_c_comments(content);
+    let lines: Vec<&str> = stripped.lines().map(str::trim).collect();
 
     while i < lines.len() {
-        let line = lines[i].trim();
+        let line = lines[i];
 
         if line.starts_with("typedef") {
             if line.contains("enum") && line.contains('{') {
@@ -175,6 +222,7 @@ pub(crate) fn parse_typedef_enum(content: &str) -> Option<EnumDef> {
 }
 
 pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
+    let line = strip_c_comments(line);
     let line = line.strip_prefix("typedef")?.trim();
     let line = line.strip_suffix(';')?.trim();
 
@@ -187,6 +235,7 @@ pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
 }
 
 pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
+    let line = strip_c_comments(line);
     let line = line
         .strip_suffix(';')
         .or_else(|| line.strip_suffix('{'))?
@@ -199,11 +248,18 @@ pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
     let params_str = &line[paren_start + 1..paren_end];
 
     let parts: Vec<&str> = signature.rsplitn(2, ' ').collect();
-    let (return_type, name) = if parts.len() == 2 {
+    let (mut return_type, mut name) = if parts.len() == 2 {
         (parts[1].to_string(), parts[0].to_string())
     } else {
         ("void".to_string(), parts[0].to_string())
     };
+    // `const char *label(void);` splits as ("const char", "*label") — hoist the
+    // stars onto the return type so the name stays a C identifier.
+    if name.starts_with('*') {
+        let stars: String = name.chars().take_while(|&c| c == '*').collect();
+        name = name[stars.len()..].to_string();
+        return_type = format!("{return_type} {stars}");
+    }
 
     let params: Vec<(String, String)> = if params_str.trim() == "void" || params_str.is_empty() {
         Vec::new()

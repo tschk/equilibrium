@@ -118,6 +118,32 @@ int add(int a, int b) {
     );
 }
 
+#[test]
+fn pointer_returns_keep_a_c_identifier_name() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("strings.h");
+    std::fs::write(
+        &header,
+        "const char *label(void);\nconst char **labels(void);\nint *count(void);\n",
+    )
+    .unwrap();
+
+    let rust = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap();
+    assert_contains(&rust, "pub fn label() -> *const c_char;");
+    assert_contains(&rust, "pub fn count() -> *mut c_int;");
+    assert!(!rust.code.contains("pub fn *"), "{}", rust.code);
+
+    let scriptc = generate_imports(&header, Language::ScriptC, &ImportOptions::default()).unwrap();
+    assert!(
+        scriptc
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Skipped function label for scriptc")),
+        "a `const char *` return is skipped for scriptc, not for its name: {:?}",
+        scriptc.warnings
+    );
+}
+
 fn assert_contains(generated: &GeneratedImport, needle: &str) {
     assert!(
         generated.code.contains(needle),
@@ -125,4 +151,49 @@ fn assert_contains(generated: &GeneratedImport, needle: &str) {
         generated.language,
         generated.code
     );
+}
+
+#[test]
+fn comments_in_declarations_do_not_leak_into_types() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("commented.h");
+    std::fs::write(
+        &header,
+        r#"/* Generated facade: markers + hash helper. */
+/* enrichment */ uint32_t crc32fast_hash(const uint8_t *data, size_t len);
+/** Adds two numbers. */ int32_t add(int32_t a, int32_t b); // trailing note
+typedef struct /* inline */ Point { int x; int y; } Point;
+/*
+ * A multi-line note mentioning add(int a, int b); and `label` must not turn
+ * into a declaration.
+ */
+const char *label(void);
+"#,
+    )
+    .unwrap();
+
+    let generated =
+        generate_imports(&header, Language::ScriptC, &ImportOptions::default()).unwrap();
+    assert_contains(&generated, "crc32fast_hash(data: Uint8Array)");
+    assert_contains(&generated, "add(a: number, b: number)");
+    assert!(
+        !generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("`/*")),
+        "comments must not become part of the type: {:?}",
+        generated.warnings
+    );
+    assert!(
+        generated
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Skipped function label for scriptc: `const char *`")),
+        "a pointer return is skipped for its class, not for a mangled name: {:?}",
+        generated.warnings
+    );
+
+    let rust = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap();
+    assert_contains(&rust, "pub fn crc32fast_hash");
+    assert!(rust.code.contains("u32"), "{}", rust.code);
 }
