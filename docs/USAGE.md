@@ -79,6 +79,7 @@ Supported extensions:
 | Nim | `.nim`, `.nims` |
 | Odin | `.odin` |
 | Hare | `.ha` |
+| TypeScript/JavaScript (scriptc) | `.ts`, `.mts`, `.cts`, `.js`, `.mjs`, `.cjs` |
 
 ## Compiler Discovery
 
@@ -147,6 +148,31 @@ ldc2 -c -of=output.o -HC input.d  # -HC generates C header
 ```bash
 zig build-obj -femit-bin=output.o input.zig
 ```
+
+**TypeScript/JavaScript (scriptc):**
+```bash
+scriptc build --lib --profile math.profile.json --no-keep-c -o libmath.a
+```
+
+scriptc has no header emitter, so `compile_to_c` writes two build inputs next to the archive before invoking it: `math.profile.json` (the C ABI, derived from the module's `export function` declarations) and `math.h` (the matching header, which is what binding generation parses). The returned `output_path` is the self-contained static archive. See the scriptc notes in the README for the supported signature classes and the runtime entry points.
+
+### Target configuration (`equilibrium.toml`)
+
+A `[target.<name>]` table beside the source (or at `CARGO_MANIFEST_DIR`) governs one source file: its `exports` allowlist, and — for scriptc — the ABI surface and emission of the generated library profile.
+
+```toml
+[target.math]
+language = "scriptc"
+sources = ["native/math.ts"]
+exports = ["add", "greet"]                      # optional: bindings allowlist
+emission = "c"                                  # scriptc: "llvm" (default) or "c"
+
+[target.math.signatures]                        # scriptc: marshalling classes
+mix = { params = ["u32", "u32"], returns = "f64" }
+truncate = { returns = "i64" }
+```
+
+`language` and `sources` select the target; `exports` limits which symbols export discovery (and the consumer wrappers built from it) cover, while Rust bindings cover every function the generated header declares — filter those with `BindingOptions::allowlist_functions`. Unknown keys are refused, and scriptc overrides are validated against the TypeScript annotations (class family, parameter count, inbound-only return classes such as `u32`, unknown export names), so a mismatch is reported instead of silently changing the ABI. Pass `LoadOptions::config_path(...)` (or `CompileOptions::config_path(...)`) to read a differently named file.
 
 ## Helper Libraries
 

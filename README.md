@@ -33,9 +33,11 @@ eq generate mylib.h --consumer all --out-dir generated-imports
 ```
 
 **Install order per platform:**
-- **Linux**: wax → brew/linuxbrew → apt / dnf / pacman
-- **macOS**: wax → brew
-- **Windows**: winget → scoop
+- **Linux**: wax → brew/linuxbrew → apt / dnf / pacman → npm
+- **macOS**: wax → brew → npm
+- **Windows**: winget → scoop → npm
+
+npm is a fallback for tools the JS ecosystem ships (`scriptc`).
 
 Multiple compilers install in parallel.
 
@@ -136,6 +138,62 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 | **Nim** | `nim` | Compiles to C by default, `--mm:none --app:staticlib` |
 | **Odin** | `odin` | `-build-mode:obj -reloc-mode:pic` |
 | **Hare** | `hare` | QBE backend (Linux only) |
+| **TypeScript/JavaScript** | `scriptc` | Library mode: `scriptc build --lib --profile` → self-contained static archive |
+
+### scriptc (TypeScript) notes
+
+[scriptc](https://scriptc.dev) compiles ordinary TypeScript/JavaScript to native code, and its only host-callable C ABI is **library mode**. Equilibrium detects `.ts .mts .cts .js .mjs .cjs`, derives a library profile and a matching C header from the module's `export function` declarations, then runs `scriptc build --lib --profile …` and returns the self-contained archive (`lib<stem>.a`) for linking.
+
+```ts
+// native/math.ts
+export function add(a: number, b: number): number {
+  return a + b;
+}
+export function greet(who: string, loud: boolean): string {
+  return loud ? who.toUpperCase() : who;
+}
+```
+
+```rust
+let lib = equilibrium_ffi::load("native/math.ts")?;
+// lib.output_path == target/native/scriptc/libmath.a
+// lib.header_path == target/native/scriptc/math.h (generated: scriptc emits none)
+```
+
+A complete runnable version — `build.rs`, class overrides, string/bytes calls — lives in [`examples/scriptc-app`](examples/scriptc-app).
+
+Requirements and behavior:
+
+- `scriptc` (Node.js 24+) plus a C compiler for its library lane. Equilibrium passes `SCRIPTC_CC=zigcc` when you have `zig` and did not set `SCRIPTC_CC` yourself, because scriptc's default `clang` driver is missing or too old on many Linux hosts.
+- Signatures must be C ABI safe: `number` → `f64`, `boolean` → `bool`, `string` → `string`, `Uint8Array` → `bytes`, and `void` returns. Anything else (optional/rest/`any`-typed parameters, unions, generics) is skipped with a warning.
+- **Marshalling classes and the profile emission are configurable** through the `[target.<name>]` table in `equilibrium.toml` (beside the source, or at your crate root):
+
+```toml
+[target.math]
+language = "scriptc"
+sources = ["native/math.ts"]
+emission = "c"                                  # "llvm" (default) or "c"
+
+[target.math.signatures]
+mix = { params = ["u32", "u32"], returns = "f64" }
+scale = { params = ["u64", "f64"], returns = "f64" }
+truncate = { returns = "i64" }
+```
+
+  Overrides are validated against the TypeScript annotations, so a class that cannot describe the annotated value — or the wrong parameter count, an unknown class name, an override for a function that is not part of the ABI — is refused with the reason instead of silently changing the ABI. `u8`/`u32`/`i32` are inbound-only in scriptc's ABI and are rejected as return classes.
+- scriptc proves every `i64`/`u64` **return** value whole and in range, so such a function must bound its value with ordered comparisons; otherwise the build fails with scriptc's `SC4022`/`SC4023` diagnostic:
+
+```ts
+export function truncate(value: number): number {
+  if (value > -9007199254740991 && value < 9007199254740991) {
+    return Math.trunc(value);
+  }
+  return 0;
+}
+```
+- Every exported symbol is prefixed with the module stem (`math_add`), and each module gets a private copy of the scriptc runtime, so several compiled modules can coexist in one process.
+- Call `<stem>_init()` once before the exports. Register `<stem>_set_panic_sink()` first if you want trap messages, since an unregistered trap aborts the process, and call `<stem>_collect()` to release buffered `string`/`bytes` results.
+- The generated profile/header are build inputs in the output directory. The default `llvm` emission is scriptc's production lane; switch to `emission = "c"` for scriptc's readable C backend (which accepts the same library-mode profile).
 
 ## Installation
 
@@ -160,7 +218,7 @@ cargo install --git https://github.com/tschk/equilibrium --features cli
 ```
 ┌─────────────────┐
 │  Source Files   │
-│  (.v, .zig, .d) │
+│ (.v, .zig, .ts) │
 └────────┬────────┘
          │
          ▼
@@ -205,7 +263,7 @@ cargo install --git https://github.com/tschk/equilibrium --features cli
 
 ## Polyglot Demo
 
-`examples/polyglot-gui/` is the live demo. It loads C via `load()` and shows the rest of the compilers it can find.
+`examples/polyglot-gui/` is the live demo. It loads C via `load()` and shows the rest of the compilers it can find, including TypeScript through scriptc.
 
 ```bash
 cd examples/polyglot-gui

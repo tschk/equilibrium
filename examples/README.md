@@ -130,3 +130,19 @@ Advanced:
 ```
 
 **This proves equilibrium's approach works end-to-end!**
+
+### 6. [scriptc-app](scriptc-app/)
+TypeScript compiled with [scriptc](https://scriptc.dev) and called from Rust.
+
+```bash
+cd scriptc-app
+cargo run
+```
+
+**Demonstrates:**
+- scriptc **library mode**: a generated profile + header, then `scriptc build --lib`
+- `equilibrium.toml` `[target.<name>.signatures]` overrides (`u32` parameters, an `i64` return)
+- `string`/`bytes` marshalling through scriptc's `(ptr, len)` and out-parameters
+- `load_with_options()` in `build.rs` linking a scriptc archive
+
+Requires `scriptc` (Node.js 24+) and a C compiler for its library lane (`zig` is picked up automatically when `SCRIPTC_CC` is unset).
