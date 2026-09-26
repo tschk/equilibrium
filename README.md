@@ -2,6 +2,8 @@
 
 **Load foreign code with one call**
 
+[eq.tsc.hk](https://eq.tsc.hk) — project site, built with crepuscularity + moonshine and hosted on Cloudflare Pages.
+
 Equilibrium auto-detects source files in various programming languages, compiles them to C intermediate representation, and loads the result into a Rust-friendly module handle. Binding generation is available when you need it, but `load()` is the primary path. Generated consumer wrappers can target the same C ABI surface for other supported languages.
 
 ## `eq` CLI

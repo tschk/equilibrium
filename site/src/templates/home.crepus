@@ -1,0 +1,152 @@
+div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mono text-sm leading-relaxed selection:bg-blue-500/30
+	div max-w-4xl mx-auto px-5 sm:px-8 lg:px-10
+		header flex flex-wrap items-center justify-between gap-4 py-6 sm:py-8
+			a href="#top" flex items-center gap-2.5 no-underline shrink-0 text-zinc-100 hover:opacity-80 transition-opacity
+				img src="./favicon.svg" alt="" width="28" height="28" w-7 h-7 shrink-0 rounded
+				span text-sm font-semibold tracking-tight
+					"equilibrium"
+			nav flex flex-wrap items-center gap-x-5 gap-y-1 text-xs
+				a href="#pipeline" text-zinc-400 hover:text-zinc-100 no-underline transition-colors
+					"Pipeline"
+				a href="#languages" text-zinc-400 hover:text-zinc-100 no-underline transition-colors
+					"Languages"
+				a href="#ecosystem" text-zinc-400 hover:text-zinc-100 no-underline transition-colors
+					"Ecosystem"
+				a href="https://crates.io/crates/equilibrium-ffi" text-zinc-400 hover:text-zinc-100 no-underline transition-colors target="_blank" rel="noopener noreferrer"
+					"crates.io"
+				a href="https://github.com/tschk/equilibrium" text-zinc-400 hover:text-zinc-100 no-underline transition-colors target="_blank" rel="noopener noreferrer"
+					"GitHub"
+		main pt-8 pb-14 sm:pt-12 sm:pb-20
+			section mb-16
+				p text-[11px] uppercase tracking-[0.2em] text-blue-400 mb-4
+					"equilibrium-ffi 0.3 · MIT · Rust + C ABI"
+				h1 text-2xl sm:text-3xl md:text-4xl font-semibold text-zinc-100 tracking-tight leading-tight max-w-2xl mb-5
+					"Load foreign code with "
+					span text-blue-400
+						"one call"
+				p text-zinc-400 leading-relaxed max-w-2xl mb-7
+					"Point equilibrium at a source file — V, Zig, C, C++, C#, Rust, D, Nim, Odin, Hare, or TypeScript — and it detects the language, compiles it to C, and loads the result. Rust bindings come out the same door."
+				div flex flex-wrap items-center gap-3 mb-10
+					a href="https://github.com/tschk/equilibrium" inline-flex items-center gap-2 rounded-md bg-blue-500 hover:bg-blue-400 text-zinc-950 text-xs font-semibold px-4 py-2.5 no-underline transition-colors target="_blank" rel="noopener noreferrer"
+						"Get started"
+						span aria-hidden="true"
+							"→"
+					a href="https://crates.io/crates/equilibrium-ffi" inline-flex items-center rounded-md border border-zinc-700 hover:border-zinc-500 text-zinc-200 text-xs px-4 py-2.5 no-underline transition-colors target="_blank" rel="noopener noreferrer"
+						"equilibrium-ffi on crates.io"
+				div grid gap-4 md:grid-cols-2 mb-10
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 overflow-hidden
+						div px-4 py-2 border-b border-zinc-800 text-[11px] uppercase tracking-[0.2em] text-zinc-500
+							"rust"
+						pre p-4 m-0 text-[11px] sm:text-xs leading-relaxed text-zinc-300 whitespace-pre overflow-x-auto
+							"use equilibrium_ffi::load;\n\nlet lib = load(\"examples/c-ffi/mathlib.c\")?;\nlib.output_path.display() // ready to link"
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 overflow-hidden
+						div px-4 py-2 border-b border-zinc-800 text-[11px] uppercase tracking-[0.2em] text-zinc-500
+							"terminal"
+						pre p-4 m-0 text-[11px] sm:text-xs leading-relaxed text-zinc-300 whitespace-pre overflow-x-auto
+							"$ eq check\n$ eq install zig nim odin\n$ eq build --release\n$ eq generate abi.h --consumer scriptc"
+			section id="pipeline" mb-16
+				h2 block text-[11px] uppercase tracking-[0.2em] text-zinc-500 mb-4
+					"Pipeline"
+				div grid gap-4 md:grid-cols-3
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 p-5
+						p block text-blue-400 text-xs font-semibold mb-2
+							"01 · Detect"
+						p block text-zinc-400 text-xs leading-relaxed
+							"Eleven languages mapped by extension. find_compiler() locates each toolchain on PATH — or eq install puts it there."
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 p-5
+						p block text-blue-400 text-xs font-semibold mb-2
+							"02 · Compile to C"
+						p block text-zinc-400 text-xs leading-relaxed
+							"Every source compiles to a C intermediate with the right flags — -fPIC and ReleaseFast for Zig objects, library archives for scriptc."
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 p-5
+						p block text-blue-400 text-xs font-semibold mb-2
+							"03 · Bind"
+						p block text-zinc-400 text-xs leading-relaxed
+							"The C surface becomes Rust extern \"C\" declarations — or consumer wrappers in the very languages you started from."
+			section id="languages" mb-16
+				h2 block text-[11px] uppercase tracking-[0.2em] text-zinc-500 mb-4
+					"Languages"
+				p block text-zinc-400 max-w-2xl mb-5
+					"Producers compile to the C ABI. Consumers take any C header and generate in-process FFI declarations. scriptc does both directions."
+				div flex flex-wrap gap-2 mb-6
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"V"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"Zig"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"C"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"C++"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"C#"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"Rust"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"D"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"Nim"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"Odin"
+					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
+						"Hare"
+					span rounded border border-blue-500/50 bg-blue-500/10 px-3 py-1.5 text-xs text-blue-300
+						"TypeScript · scriptc"
+				div rounded-lg border border-zinc-800 bg-zinc-900/60 overflow-hidden
+					div px-4 py-2 border-b border-zinc-800 text-[11px] uppercase tracking-[0.2em] text-zinc-500
+						"one header → every consumer"
+					pre p-4 m-0 text-[11px] sm:text-xs leading-relaxed text-zinc-300 whitespace-pre overflow-x-auto
+						"$ eq generate crepuscularity_abi.h --consumer rust     # extern \"C\" block\n$ eq generate crepuscularity_abi.h --consumer zig      # @cImport aliases\n$ eq generate crepuscularity_abi.h --consumer scriptc  # bindings.ts + --ffi manifest"
+			section id="ecosystem"
+				h2 text-[11px] uppercase tracking-[0.2em] text-zinc-500 mb-4
+					"Ecosystem"
+				div grid gap-4 md:grid-cols-3
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 p-5 flex flex-col
+						div flex items-center justify-between mb-3
+							p text-zinc-100 text-sm font-semibold
+								"rig"
+							p text-zinc-500 text-[11px]
+								"tschk/rig"
+						p block text-zinc-400 text-xs leading-relaxed mb-4
+							"Cross-language native dependency manager. Detects the host language, adds crates from the CLI, and exposes them in-process through equilibrium-ffi — including TypeScript hosts via scriptc."
+						div mt-auto
+							p block text-[11px] text-zinc-500 mb-2
+								"cargo install rigpkg"
+							a block w-fit href="https://github.com/tschk/rig" text-blue-400 hover:text-blue-300 text-xs no-underline target="_blank" rel="noopener noreferrer"
+								"github.com/tschk/rig →"
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 p-5 flex flex-col
+						div flex items-center justify-between mb-3
+							p text-zinc-100 text-sm font-semibold
+								"eqts"
+							p text-zinc-500 text-[11px]
+								"tschk/eqts"
+						p block text-zinc-400 text-xs leading-relaxed mb-4
+							"One Rust API for TypeScript. Annotate with #[eqts::export] and run the same library in Node, Bun, Deno, and WebAssembly — records, results, async, streams, and object proxies included."
+						div mt-auto
+							p block text-[11px] text-zinc-500 mb-2
+								"cargo install cargo-eqts"
+							a block w-fit href="https://github.com/tschk/eqts" text-blue-400 hover:text-blue-300 text-xs no-underline target="_blank" rel="noopener noreferrer"
+								"github.com/tschk/eqts →"
+					div rounded-lg border border-zinc-800 bg-zinc-900/60 p-5 flex flex-col
+						div flex items-center justify-between mb-3
+							p text-zinc-100 text-sm font-semibold
+								"eqswift"
+							p text-zinc-500 text-[11px]
+								"tschk/eqswift"
+						p block text-zinc-400 text-xs leading-relaxed mb-4
+							"Two lines to FFI Rust into Swift. UniFFI proc-macros plus cargo eqswift emit Swift bindings from annotated Rust — no UDL files, no build.rs."
+						div mt-auto
+							p block text-[11px] text-zinc-500 mb-2
+								"eqswift = \"0.1\" + uniffi"
+							a block w-fit href="https://github.com/tschk/eqswift" text-blue-400 hover:text-blue-300 text-xs no-underline target="_blank" rel="noopener noreferrer"
+								"github.com/tschk/eqswift →"
+		footer border-t border-zinc-800 mt-4
+			div max-w-4xl mx-auto px-5 sm:px-8 lg:px-10 py-6 flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-500
+				p
+					"equilibrium · MIT · built with crepuscularity + moonshine"
+				div flex items-center gap-4
+					a href="https://github.com/tschk/equilibrium" text-zinc-400 hover:text-zinc-100 no-underline target="_blank" rel="noopener noreferrer"
+						"GitHub"
+					a href="https://docs.rs/equilibrium-ffi" text-zinc-400 hover:text-zinc-100 no-underline target="_blank" rel="noopener noreferrer"
+						"docs.rs"
+					a href="https://tsc.hk" text-zinc-400 hover:text-zinc-100 no-underline target="_blank" rel="noopener noreferrer"
+						"tsc.hk"

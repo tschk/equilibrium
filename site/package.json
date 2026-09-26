@@ -1,0 +1,36 @@
+{
+  "name": "site",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run build:manifest && bun run build:css && bun run build:html",
+    "build:manifest": "moonshine build",
+    "build:css": "tailwindcss -i src/app.css -o dist/styles.css --minify",
+    "build:html": "bun scripts/build.tsx",
+    "dev": "moonshine dev",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
+  },
+  "dependencies": {
+    "@tschk/moonshine": "^0.4.0",
+    "@tschk/moonshine-framework": "^0.4.0",
+    "@tschk/moonshine-compiler": "^0.4.0",
+    "@tschk/moonshine-server": "^0.4.0",
+    "@tschk/moonshine-deploy-bun": "^0.4.0",
+    "@tschk/crepus-moonshine": "^0.4.0",
+    "@tschk/moonshine-react": "^0.4.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "@tschk/moonshine-cli": "^0.4.1",
+    "@types/bun": "^1.3.14",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.9",
+    "wrangler": "^4.141.0"
+  }
+}

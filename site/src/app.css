@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@source "../src/templates/home.crepus";
+@source "../src/routes";
+
+@theme {
+	--font-mono:
+		"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+		monospace;
+	--font-sans:
+		"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+		monospace;
+}
+
+html {
+	scroll-behavior: smooth;
+}
+
+body {
+	background: #09090b;
+}
