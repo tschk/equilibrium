@@ -11,8 +11,11 @@ import { createHash } from "node:crypto";
 import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../src/routes/index";
 
-// Cache-bust: content-hashed filenames, so a new deploy never pairs fresh
-// HTML with cached stylesheet or favicon.
+// Fresh-clone safe: assemble dist/ (stylesheet from build:css + public/) before
+// cache-busting. Content-hashed filenames keep a new deploy from pairing fresh
+// HTML with a cached stylesheet or favicon.
+mkdirSync("dist", { recursive: true });
+cpSync("public", "dist", { recursive: true });
 const bust = (file: string) => {
 	const hash = createHash("sha256").update(readFileSync(`dist/${file}`)).digest("hex").slice(0, 8);
 	const hashed = file.replace(/(\.[^.]+)$/, `.${hash}$1`);
@@ -68,7 +71,5 @@ ${body}
 </html>
 `;
 
-mkdirSync("dist", { recursive: true });
 writeFileSync("dist/index.html", html);
-cpSync("public", "dist", { recursive: true });
 console.log(`dist/index.html (${(html.length / 1024).toFixed(1)} kB)`);
