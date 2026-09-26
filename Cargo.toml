@@ -1,9 +1,9 @@
 [package]
 name = "equilibrium-ffi"
 authors = ["Max Carter <max@undivisible.dev>"]
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
-description = "Automatic C FFI generation for C-compiling languages (V, Zig, C++, C#, Rust, D, Nim, Odin) (unstable and in development)"
+description = "Automatic C FFI generation for C-compiling languages (V, Zig, C++, C#, Rust, D, Nim, Odin, Hare, and TypeScript/JavaScript via scriptc) (unstable and in development)"
 license = "ISC"
 repository = "https://github.com/tschk/equilibrium"
 exclude = ["AGENTS.md", ".agents", ".amp"]
