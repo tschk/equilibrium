@@ -394,7 +394,9 @@ fn scriptc_manifest(bindings: &[ScriptcFunction], options: &ImportOptions) -> St
 /// Manifest paths resolve from the manifest's directory, so a relative library
 /// path is anchored to the directory that generated it.
 fn manifest_library_path(path: &Path) -> String {
-    if path.is_absolute() {
+    // A rooted path (`/build/libc.a`) already says where it lives; joining it
+    // onto the current directory would splice a Windows drive letter in front.
+    if path.is_absolute() || path.has_root() {
         return path.display().to_string();
     }
     match std::env::current_dir() {
@@ -971,13 +973,16 @@ int *c_pointer(void);
     fn scriptc_manifest_anchors_relative_libraries() {
         let generated = generate(&ImportOptions::default().native_libraries(["build/libc.a"]));
         let manifest = &generated.companions[0].contents;
-        let expected = std::env::current_dir()
+        let anchored = std::env::current_dir()
             .unwrap()
             .join("build/libc.a")
             .display()
             .to_string();
+        // The manifest is JSON, so compare against its JSON encoding: Windows
+        // backslashes arrive escaped.
+        let expected = crate::scriptc::json_string(&anchored);
         assert!(
-            manifest.contains(&format!("\"libraries\": [\"{expected}\"]")),
+            manifest.contains(&format!("\"libraries\": [{expected}]")),
             "manifest:\n{manifest}"
         );
     }

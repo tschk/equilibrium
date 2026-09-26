@@ -84,10 +84,16 @@ fn typescript_host_calls_a_native_library_through_the_generated_manifest() {
     }
     let manifest_name = manifest_name.expect("scriptc bindings carry their manifest");
 
-    // The manifest must name the artifact equilibrium just compiled.
+    // The manifest must name the artifact equilibrium just compiled; compare
+    // the JSON-encoded path so Windows backslashes match their escapes.
     let manifest = std::fs::read_to_string(host.join(&manifest_name)).unwrap();
+    let artifact = module
+        .output_path
+        .display()
+        .to_string()
+        .replace('\\', "\\\\");
     assert!(
-        manifest.contains(&module.output_path.display().to_string()),
+        manifest.contains(&format!("\"libraries\": [\"{artifact}\"]")),
         "manifest:\n{manifest}"
     );
     assert!(
@@ -240,9 +246,14 @@ fn relative_libraries_are_anchored_when_the_manifest_is_written() {
     .expect("scriptc imports");
 
     let manifest = &generated.companions[0].contents;
-    let anchored = std::env::current_dir().unwrap().join("build/liblib.a");
+    let anchored = std::env::current_dir()
+        .unwrap()
+        .join("build/liblib.a")
+        .display()
+        .to_string()
+        .replace('\\', "\\\\");
     assert!(
-        manifest.contains(&format!("\"libraries\": [\"{}\"]", anchored.display())),
+        manifest.contains(&format!("\"libraries\": [\"{anchored}\"]")),
         "manifest:\n{manifest}"
     );
     assert!(!manifest.contains("size_t"));
