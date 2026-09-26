@@ -87,7 +87,7 @@ println!("loaded: {}", lib.output_path.display());
 
 ```toml
 [dependencies]
-equilibrium-ffi = "0.1"
+equilibrium-ffi = "0.3"
 ```
 
 ### 2. Use in build.rs
