@@ -130,6 +130,7 @@ enum PkgMgr {
     Apt,
     Dnf,
     Pacman,
+    Npm,
     Winget,
     Scoop,
 }
@@ -142,6 +143,7 @@ impl PkgMgr {
             PkgMgr::Apt => "apt-get",
             PkgMgr::Dnf => "dnf",
             PkgMgr::Pacman => "pacman",
+            PkgMgr::Npm => "npm",
             PkgMgr::Winget => "winget",
             PkgMgr::Scoop => "scoop",
         }
@@ -153,6 +155,7 @@ impl PkgMgr {
             PkgMgr::Apt => install.apt.as_str(),
             PkgMgr::Dnf => install.dnf.as_str(),
             PkgMgr::Pacman => install.pacman.as_str(),
+            PkgMgr::Npm => install.npm.as_str(),
             PkgMgr::Winget => install.winget.as_str(),
             PkgMgr::Scoop => install.scoop.as_str(),
         }
@@ -164,6 +167,8 @@ impl PkgMgr {
             PkgMgr::Apt => vec!["install".into(), "-y".into(), pkg.into()],
             PkgMgr::Dnf => vec!["install".into(), "-y".into(), pkg.into()],
             PkgMgr::Pacman => vec!["-S".into(), "--noconfirm".into(), pkg.into()],
+            // Global npm installs land on the user's PATH (or their npm prefix).
+            PkgMgr::Npm => vec!["install".into(), "-g".into(), pkg.into()],
             // -e = exact match; --id avoids interactive prompts
             PkgMgr::Winget => vec![
                 "install".into(),
@@ -216,27 +221,33 @@ fn available_managers() -> Vec<PkgMgr> {
         if which::which("winget").is_ok() {
             v.push(PkgMgr::Winget);
         }
-        return v;
+    } else {
+        // homebrew / linuxbrew
+        if which::which("brew").is_ok()
+            || PathBuf::from("/home/linuxbrew/.linuxbrew/bin/brew").exists()
+            || PathBuf::from("/opt/homebrew/bin/brew").exists()
+        {
+            v.push(PkgMgr::Brew);
+        }
+        if cfg!(target_os = "linux") {
+            if which::which("apt-get").is_ok() {
+                v.push(PkgMgr::Apt);
+            }
+            if which::which("dnf").is_ok() {
+                v.push(PkgMgr::Dnf);
+            }
+            if which::which("pacman").is_ok() {
+                v.push(PkgMgr::Pacman);
+            }
+        }
     }
 
-    // homebrew / linuxbrew
-    if which::which("brew").is_ok()
-        || PathBuf::from("/home/linuxbrew/.linuxbrew/bin/brew").exists()
-        || PathBuf::from("/opt/homebrew/bin/brew").exists()
-    {
-        v.push(PkgMgr::Brew);
+    // npm is a language-level package manager, so it comes last: it only
+    // installs what the JS ecosystem ships (scriptc).
+    if which::which("npm").is_ok() {
+        v.push(PkgMgr::Npm);
     }
-    if cfg!(target_os = "linux") {
-        if which::which("apt-get").is_ok() {
-            v.push(PkgMgr::Apt);
-        }
-        if which::which("dnf").is_ok() {
-            v.push(PkgMgr::Dnf);
-        }
-        if which::which("pacman").is_ok() {
-            v.push(PkgMgr::Pacman);
-        }
-    }
+
     v
 }
 
@@ -547,7 +558,7 @@ fn cmd_generate(
 ) -> ExitCode {
     if let Some(consumer) = consumer {
         let languages = if consumer.eq_ignore_ascii_case("all") {
-            equilibrium_ffi::Language::all().to_vec()
+            equilibrium_ffi::Language::import_targets()
         } else if let Some(language) = equilibrium_ffi::Language::from_cli_name(&consumer) {
             vec![language]
         } else {
@@ -739,6 +750,9 @@ fn import_filename(language: equilibrium_ffi::Language) -> String {
         equilibrium_ffi::Language::Odin => "bindings.odin",
         equilibrium_ffi::Language::Hare => "bindings.ha",
         equilibrium_ffi::Language::V => "bindings.v",
+        // scriptc is a producer only; consumer generation refuses it before
+        // this name is used.
+        equilibrium_ffi::Language::ScriptC => "bindings.d.ts",
     }
     .to_string()
 }

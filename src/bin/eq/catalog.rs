@@ -10,6 +10,7 @@ pub struct Install {
     pub apt: String,
     pub dnf: String,
     pub pacman: String,
+    pub npm: String,
     pub winget: String,
     pub scoop: String,
     pub scoop_bucket: String,
@@ -57,6 +58,8 @@ struct InstallEntry {
     #[serde(default)]
     pacman: String,
     #[serde(default)]
+    npm: String,
+    #[serde(default)]
     winget: String,
     #[serde(default)]
     scoop: String,
@@ -88,6 +91,7 @@ fn load_compilers() -> Vec<Compiler> {
                     apt: e.install.apt,
                     dnf: e.install.dnf,
                     pacman: e.install.pacman,
+                    npm: e.install.npm,
                     winget: e.install.winget,
                     scoop: e.install.scoop,
                     scoop_bucket: e.install.scoop_bucket,

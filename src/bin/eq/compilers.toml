@@ -106,6 +106,20 @@ pacman = "hare"
 manual = "https://harelang.org/"
 
 [[compiler]]
+id = "scriptc"
+lang = "TS (scriptc)"
+bin = "scriptc"
+extra_paths = [
+  "/home/linuxbrew/.linuxbrew/bin",
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+]
+version_args = ["--version"]
+[compiler.install]
+npm = "scriptc"
+manual = "https://scriptc.dev/quickstart"
+
+[[compiler]]
 id = "dotnet"
 lang = "C# (dotnet)"
 bin = "dotnet"
