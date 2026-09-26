@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use crate::bindings::{generate_bindings_from_content, BindingOptions, GeneratedBinding};
 use crate::c_header::parse_c_header;
 use crate::compiler::{
-    compile_to_c_with_extra, extra_link_arg_allowed, validate_extra_args, CompileResult,
+    compile_to_c_with_options, extra_link_arg_allowed, validate_extra_args, CompileOptions,
+    CompileResult,
 };
 use crate::detector::{detect_language, find_compiler, Language};
 use crate::exports::{discover_exports_with_options, ExportOptions, ExportSource};
@@ -195,11 +196,15 @@ pub fn load_with_options<S: AsRef<Path>>(
     }
 
     let result = if options.compile {
-        compile_to_c_with_extra(
+        compile_to_c_with_options(
             &source,
             &output_dir,
-            &options.compile_args,
-            &options.link_args,
+            lang,
+            &CompileOptions {
+                config_path: options.config_path.clone(),
+                compile_args: options.compile_args.clone(),
+                link_args: options.link_args.clone(),
+            },
         )
         .map_err(|e| LoadError::CompilationFailed(lang, e.to_string()))?
     } else {
@@ -386,6 +391,11 @@ fn emit_cargo_link(
         _ => {
             println!("cargo:rustc-link-arg={}", output_path.display());
         }
+    }
+    // scriptc's runtime is self-contained but still references the platform's
+    // math runtime, which scriptc's own link line names for Linux.
+    if language == Language::ScriptC && cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-arg=-lm");
     }
     for arg in link_args {
         println!("cargo:rustc-link-arg={arg}");

@@ -22,22 +22,26 @@
 //! | C/C++ | `clang`/`gcc` | Native |
 //! | C# | `csc`/`mono` | P/Invoke + Native AOT |
 //! | Rust | `rustc` | cbindgen |
+//! | TypeScript/JavaScript | `scriptc` | `scriptc build --lib --profile` static archive |
 
 mod bindings;
 mod c_header;
 mod compiler;
+mod config;
 mod detector;
 mod exports;
 mod imports;
 mod limits;
 mod loader;
 mod scanner;
+mod scriptc;
 
 pub use bindings::{
     generate_bindings, generate_bindings_from_content, BindingOptions, GeneratedBinding,
 };
 pub use compiler::{
-    compile_batch, compile_to_c, compile_to_c_with_extra, CompileError, CompileResult,
+    compile_batch, compile_to_c, compile_to_c_with_extra, compile_to_c_with_options, CompileError,
+    CompileOptions, CompileResult,
 };
 pub use detector::{
     compiler_version_at, detect_language, find_binary, find_compiler, scan_directory, Language,

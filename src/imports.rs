@@ -102,6 +102,10 @@ fn render_imports(
         Language::Odin => Ok(render_odin(header, functions)),
         Language::Hare => Ok(render_hare(functions)),
         Language::V => Ok(render_v(header, functions)),
+        Language::ScriptC => Err(
+            "scriptc consumes C through `--ffi` manifests rather than generated wrappers"
+                .to_string(),
+        ),
     }
 }
 

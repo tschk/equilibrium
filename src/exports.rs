@@ -1,10 +1,8 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
-
+use crate::config;
 use crate::detector::Language;
-use crate::limits::{read_config_text, read_discovery_source};
+use crate::limits::read_discovery_source;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExportSource {
@@ -75,18 +73,6 @@ impl std::fmt::Display for ExportError {
 
 impl std::error::Error for ExportError {}
 
-#[derive(Deserialize)]
-struct EquilibriumConfig {
-    target: Option<BTreeMap<String, TargetConfig>>,
-}
-
-#[derive(Deserialize)]
-struct TargetConfig {
-    language: Option<String>,
-    sources: Option<Vec<String>>,
-    exports: Option<Vec<String>>,
-}
-
 #[derive(Clone)]
 struct FunctionCandidate {
     name: String,
@@ -144,69 +130,14 @@ fn config_exports(
     language: Language,
     options: &ExportOptions,
 ) -> Result<Option<Vec<String>>, ExportError> {
-    for config_path in config_candidates(source, options) {
-        if !config_path.is_file() {
-            continue;
-        }
-        let config_text =
-            read_config_text(&config_path).map_err(|message| ExportError::Config {
-                path: config_path.clone(),
-                message,
-            })?;
-        let config: EquilibriumConfig =
-            toml::from_str(&config_text).map_err(|error| ExportError::Config {
-                path: config_path.clone(),
-                message: error.to_string(),
-            })?;
-        let Some(targets) = config.target else {
-            continue;
-        };
-        let base = config_path.parent().unwrap_or(Path::new("."));
-        for target in targets.values() {
-            if target_matches(target, source, base, language) {
-                if let Some(exports) = &target.exports {
-                    return Ok(Some(dedupe(exports.clone())));
-                }
+    let target =
+        config::target_for(source, options.config_path.as_deref(), language).map_err(|error| {
+            ExportError::Config {
+                path: error.path,
+                message: error.message,
             }
-        }
-    }
-    Ok(None)
-}
-
-fn config_candidates(source: &Path, options: &ExportOptions) -> Vec<PathBuf> {
-    if let Some(path) = &options.config_path {
-        return vec![path.clone()];
-    }
-    let mut candidates = Vec::new();
-    if let Some(parent) = source.parent() {
-        candidates.push(parent.join("equilibrium.toml"));
-    }
-    if let Ok(manifest_dir) = std::env::var("CARGO_MANIFEST_DIR") {
-        candidates.push(PathBuf::from(manifest_dir).join("equilibrium.toml"));
-    }
-    candidates.dedup();
-    candidates
-}
-
-fn target_matches(target: &TargetConfig, source: &Path, base: &Path, language: Language) -> bool {
-    if let Some(target_language) = &target.language {
-        if target_language.to_ascii_lowercase() != language.cli_name() {
-            return false;
-        }
-    }
-    let Some(sources) = &target.sources else {
-        return false;
-    };
-    let canonical_source = source
-        .canonicalize()
-        .unwrap_or_else(|_| source.to_path_buf());
-    sources.iter().any(|candidate| {
-        let candidate_path = base.join(candidate);
-        let canonical_candidate = candidate_path
-            .canonicalize()
-            .unwrap_or_else(|_| candidate_path.clone());
-        canonical_candidate == canonical_source || candidate_path == source
-    })
+        })?;
+    Ok(target.and_then(|target| target.exports).map(dedupe))
 }
 
 fn language_candidates(language: Language, content: &str) -> Vec<FunctionCandidate> {
@@ -216,8 +147,22 @@ fn language_candidates(language: Language, content: &str) -> Vec<FunctionCandida
         Language::Nim => nim_candidates(content),
         Language::D => d_candidates(content),
         Language::C | Language::Cpp => c_candidates(content),
+        Language::ScriptC => scriptc_candidates(content),
         _ => Vec::new(),
     }
+}
+
+/// Every `export function` in a module is an explicit C ABI marker: scriptc
+/// only exposes what the library profile declares.
+fn scriptc_candidates(content: &str) -> Vec<FunctionCandidate> {
+    crate::scriptc::scan_declarations(content)
+        .into_iter()
+        .map(|declaration| FunctionCandidate {
+            name: declaration.name,
+            signature: declaration.signature,
+            explicit: true,
+        })
+        .collect()
 }
 
 fn rust_candidates(content: &str) -> Vec<FunctionCandidate> {
@@ -378,22 +323,24 @@ fn supported_exports(
     let mut exports = Vec::new();
     let mut warnings = Vec::new();
     for candidate in candidates {
-        if signature_supported(&candidate.signature, language) {
-            exports.push(candidate.name);
-        } else {
-            warnings.push(format!(
-                "skipped export {} because its signature is not C ABI safe",
+        match signature_problem(&candidate.signature, language) {
+            None => exports.push(candidate.name),
+            Some(reason) => warnings.push(format!(
+                "skipped export {} because its signature is not C ABI safe ({reason})",
                 candidate.name
-            ));
+            )),
         }
     }
     (dedupe(exports), warnings)
 }
 
-fn signature_supported(signature: &str, language: Language) -> bool {
+/// Why a signature cannot cross the C ABI, or `None` when it can.
+fn signature_problem(signature: &str, language: Language) -> Option<String> {
     match language {
-        Language::Rust => rust_signature_supported(signature),
-        _ => true,
+        Language::Rust => (!rust_signature_supported(signature))
+            .then(|| "unsupported Rust parameter or return type".to_string()),
+        Language::ScriptC => crate::scriptc::parse_signature(signature).err(),
+        _ => None,
     }
 }
 

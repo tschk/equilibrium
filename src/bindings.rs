@@ -305,6 +305,18 @@ mod tests {
     }
 
     #[test]
+    fn test_c_type_to_rust_nested_pointers() {
+        // `const` applies to the innermost type, so Rust spells it on the
+        // pointer that encloses it — the outer pointer stays mutable.
+        assert_eq!(c_type_to_rust("uint8_t **"), "*mut *mut u8");
+        assert_eq!(c_type_to_rust("const uint8_t **"), "*mut *const u8");
+        assert_eq!(c_type_to_rust("const char **"), "*mut *const c_char");
+        assert_eq!(c_type_to_rust("const void **"), "*mut *const c_void");
+        assert_eq!(c_type_to_rust("const char *"), "*const c_char");
+        assert_eq!(c_type_to_rust("const void *"), "*const c_void");
+    }
+
+    #[test]
     fn test_parse_function() {
         let func = parse_function_line("int add(int a, int b);").unwrap();
         assert_eq!(func.name, "add");

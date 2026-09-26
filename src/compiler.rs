@@ -24,6 +24,8 @@ pub enum CompileError {
     UnsupportedCOutput { language: Language },
     /// Extra compiler/link argument was rejected.
     InvalidExtraArg { arg: String },
+    /// `equilibrium.toml` (or the ABI it declares) is unusable.
+    InvalidConfig { message: String },
 }
 
 impl std::fmt::Display for CompileError {
@@ -42,6 +44,9 @@ impl std::fmt::Display for CompileError {
             CompileError::InvalidExtraArg { arg } => {
                 write!(f, "rejected extra compiler argument: {arg}")
             }
+            CompileError::InvalidConfig { message } => {
+                write!(f, "invalid configuration: {message}")
+            }
         }
     }
 }
@@ -51,6 +56,43 @@ impl std::error::Error for CompileError {}
 impl From<std::io::Error> for CompileError {
     fn from(e: std::io::Error) -> Self {
         CompileError::Io(e)
+    }
+}
+
+/// Options for [`compile_to_c_with_options`].
+#[derive(Clone, Debug, Default)]
+pub struct CompileOptions {
+    /// `equilibrium.toml` to read language settings from. When unset the config
+    /// beside the source, then `CARGO_MANIFEST_DIR`, is used.
+    pub config_path: Option<PathBuf>,
+    /// Extra compiler arguments appended to the language's own flags.
+    pub compile_args: Vec<String>,
+    /// Reserved for a future link step (stored, not applied).
+    pub link_args: Vec<String>,
+}
+
+impl CompileOptions {
+    pub fn config_path<P: AsRef<Path>>(mut self, path: P) -> Self {
+        self.config_path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    pub fn compile_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.compile_args = args.into_iter().map(Into::into).collect();
+        self
+    }
+
+    pub fn link_args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.link_args = args.into_iter().map(Into::into).collect();
+        self
     }
 }
 
@@ -87,7 +129,12 @@ pub fn compile_to_c_with_extra(
             "Unknown source language",
         ))
     })?;
-    compile_to_c_with_lang_and_extra(input, output_dir, language, compile_args, _link_args)
+    compile_inner(
+        input,
+        output_dir,
+        language,
+        &CompileOptions::default().compile_args(compile_args.iter().cloned()),
+    )
 }
 
 /// Compile a source file to C with explicit language.
@@ -105,6 +152,30 @@ pub fn compile_to_c_with_lang_and_extra(
     language: Language,
     compile_args: &[String],
     _link_args: &[String],
+) -> Result<CompileResult, CompileError> {
+    compile_inner(
+        input,
+        output_dir,
+        language,
+        &CompileOptions::default().compile_args(compile_args.iter().cloned()),
+    )
+}
+
+/// Compile with explicit options.
+pub fn compile_to_c_with_options(
+    input: &Path,
+    output_dir: &Path,
+    language: Language,
+    options: &CompileOptions,
+) -> Result<CompileResult, CompileError> {
+    compile_inner(input, output_dir, language, options)
+}
+
+fn compile_inner(
+    input: &Path,
+    output_dir: &Path,
+    language: Language,
+    options: &CompileOptions,
 ) -> Result<CompileResult, CompileError> {
     if !input.is_file() {
         return Err(CompileError::Io(std::io::Error::new(
@@ -125,7 +196,12 @@ pub fn compile_to_c_with_lang_and_extra(
     }
 
     std::fs::create_dir_all(output_dir)?;
-    validate_extra_args(compile_args)?;
+
+    // Compilers run with the input's directory as their working directory, so
+    // every path handed to them (and checked afterwards) has to be absolute.
+    let input = std::fs::canonicalize(input)?;
+    let output_dir = std::fs::canonicalize(output_dir)?;
+    validate_extra_args(&options.compile_args)?;
 
     // Find compiler
     let info = find_compiler(language).ok_or(CompileError::CompilerNotFound { language })?;
@@ -145,17 +221,27 @@ pub fn compile_to_c_with_lang_and_extra(
     let c_output = output_dir.join(artifact_filename(language, stem));
     let header_output = output_dir.join(format!("{stem}.h"));
 
+    // scriptc takes its ABI surface from a JSON profile and emits no header,
+    // so both are written next to the archive before the compiler runs.
+    if language == Language::ScriptC {
+        write_scriptc_library_surface(&input, &output_dir, stem, &c_output, options)?;
+    }
+
     // Build command
     let input_str = input.to_string_lossy();
     let output_str = c_output.to_string_lossy();
 
     let mut args = language.to_c_args(&input_str, &output_str);
-    args.extend(compile_args.iter().cloned());
+    args.extend(options.compile_args.iter().cloned());
 
-    let output = Command::new(&compiler)
+    let mut command = Command::new(&compiler);
+    command
         .args(&args)
-        .current_dir(input.parent().unwrap_or(Path::new(".")))
-        .output()?;
+        .current_dir(input.parent().unwrap_or(Path::new(".")));
+    if language == Language::ScriptC {
+        crate::scriptc::configure_command(&mut command);
+    }
+    let output = command.output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -187,11 +273,11 @@ pub fn compile_to_c_with_lang_and_extra(
     // Check if header was generated (language-specific)
     let header_path = if header_output.exists() {
         Some(header_output)
-    } else if let Some(copied) = copy_sibling_header(input, output_dir) {
+    } else if let Some(copied) = copy_sibling_header(&input, &output_dir) {
         Some(copied)
     } else {
         // Try to generate header for some languages
-        generate_header(input, output_dir, language).ok()
+        generate_header(&input, &output_dir, language).ok()
     };
 
     Ok(CompileResult {
@@ -213,6 +299,9 @@ fn artifact_filename(language: Language, stem: &str) -> String {
         | Language::Hare => format!("{stem}.o"),
         Language::V => format!("{stem}.c"),
         Language::Nim => format!("{stem}.a"),
+        // scriptc's own name is `<stem>.lib.a`; the `lib` prefix keeps rustc's
+        // `-l` lookup (`cargo:rustc-link-lib=static=…`) working.
+        Language::ScriptC => format!("lib{stem}.a"),
         Language::CSharp => format!("{stem}.dll"),
         Language::Rust => {
             if cfg!(target_os = "windows") {
@@ -224,6 +313,39 @@ fn artifact_filename(language: Language, stem: &str) -> String {
             }
         }
     }
+}
+
+/// Write the library profile and the matching C header that scriptc's library
+/// mode needs: scriptc emits no header, and the profile is where the module's
+/// exported C symbols are declared. `equilibrium.toml` may refine the ABI
+/// surface (marshalling classes) and the profile's emission.
+fn write_scriptc_library_surface(
+    input: &Path,
+    output_dir: &Path,
+    stem: &str,
+    archive: &Path,
+    options: &CompileOptions,
+) -> Result<(), CompileError> {
+    let settings = crate::scriptc::target_settings(input, options.config_path.as_deref())
+        .map_err(|message| CompileError::InvalidConfig { message })?;
+    let bytes = std::fs::read(input)?;
+    let content = String::from_utf8_lossy(&bytes);
+    let exports: Vec<crate::scriptc::ScriptcExport> = crate::scriptc::scan_declarations(&content)
+        .into_iter()
+        .filter_map(|declaration| crate::scriptc::parse_signature(&declaration.signature).ok())
+        .collect();
+    let exports = crate::scriptc::apply_overrides(exports, &settings)
+        .map_err(|message| CompileError::InvalidConfig { message })?;
+    let prefix = crate::scriptc::symbol_prefix(stem);
+    std::fs::write(
+        crate::scriptc::profile_path(input, archive),
+        crate::scriptc::profile_json(stem, &prefix, input, &exports, settings.emission),
+    )?;
+    std::fs::write(
+        output_dir.join(format!("{stem}.h")),
+        crate::scriptc::header(&prefix, stem, &exports),
+    )?;
+    Ok(())
 }
 
 fn copy_sibling_header(input: &Path, output_dir: &Path) -> Option<PathBuf> {
@@ -480,6 +602,30 @@ mod tests {
         let result = compile_to_c(&c_file, &output_dir).unwrap();
         assert!(result.output_path.exists());
         assert_eq!(result.language, Language::C);
+    }
+
+    #[test]
+    fn test_compile_relative_output_dir_stays_with_the_caller() {
+        // Compilers run with the source's directory as their working directory,
+        // so a relative output dir must be resolved before it is handed over.
+        if find_compiler(Language::C).is_none() {
+            return;
+        }
+
+        let dir = tempdir().unwrap();
+        let c_file = dir.path().join("test.c");
+        std::fs::write(&c_file, "int add(int a, int b) { return a + b; }\n").unwrap();
+
+        let output_dir = PathBuf::from(format!("target/relative-output-{}", std::process::id()));
+        let result = compile_to_c(&c_file, &output_dir).unwrap();
+
+        assert!(result.output_path.is_absolute());
+        assert!(result.output_path.exists());
+        assert!(
+            !dir.path().join("target").exists(),
+            "output landed inside the source directory"
+        );
+        let _ = std::fs::remove_dir_all(&output_dir);
     }
 
     #[test]

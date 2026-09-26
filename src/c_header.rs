@@ -270,9 +270,15 @@ pub(crate) fn c_type_to_rust(c_type: &str) -> String {
                 "*mut c_void".to_string()
             } else if inner == "const void" {
                 "*const c_void".to_string()
-            } else if inner.starts_with("const ") {
-                let inner_type = c_type_to_rust(inner.strip_prefix("const ").unwrap());
-                format!("*const {}", inner_type)
+            } else if let Some(pointee) = inner.strip_prefix("const ") {
+                let pointee = pointee.trim();
+                if pointee.ends_with('*') {
+                    // `const T **` is a mutable pointer to a pointer to const
+                    // T: the const belongs to the inner pointer, not the outer.
+                    format!("*mut {}", c_type_to_rust(inner))
+                } else {
+                    format!("*const {}", c_type_to_rust(pointee))
+                }
             } else {
                 format!("*mut {}", c_type_to_rust(inner))
             }

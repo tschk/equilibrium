@@ -26,6 +26,8 @@ pub enum Language {
     Odin,
     /// Hare language
     Hare,
+    /// TypeScript/JavaScript compiled by scriptc (scriptc.dev)
+    ScriptC,
 }
 
 /// Information about a detected language.
@@ -50,6 +52,7 @@ impl Language {
             Language::Nim => "nim",
             Language::Odin => "odin",
             Language::Hare => "hare",
+            Language::ScriptC => "scriptc",
         }
     }
 
@@ -65,6 +68,7 @@ impl Language {
             "nim" => Some(Language::Nim),
             "odin" => Some(Language::Odin),
             "hare" => Some(Language::Hare),
+            "scriptc" | "typescript" | "ts" => Some(Language::ScriptC),
             _ => None,
         }
     }
@@ -82,6 +86,7 @@ impl Language {
             Language::Nim => &["nim", "nims"],
             Language::Odin => &["odin"],
             Language::Hare => &["ha"],
+            Language::ScriptC => &["ts", "mts", "cts", "js", "mjs", "cjs"],
         }
     }
 
@@ -98,6 +103,7 @@ impl Language {
             Language::Nim => "nim",
             Language::Odin => "odin",
             Language::Hare => "hare",
+            Language::ScriptC => "scriptc",
         }
     }
 
@@ -263,6 +269,23 @@ impl Language {
                     input.to_string(),
                 ]
             }
+            Language::ScriptC => {
+                // scriptc's host-callable ABI is library mode: the profile
+                // names the entry module and the exported symbols, and the
+                // archive is the linkable artifact. `compiler.rs` writes the
+                // profile (and the matching header) before this runs.
+                vec![
+                    "build".to_string(),
+                    "--lib".to_string(),
+                    "--profile".to_string(),
+                    crate::scriptc::profile_path(Path::new(input), Path::new(output))
+                        .to_string_lossy()
+                        .into_owned(),
+                    "--no-keep-c".to_string(),
+                    "-o".to_string(),
+                    output.to_string(),
+                ]
+            }
         }
     }
 
@@ -279,7 +302,25 @@ impl Language {
             Language::Nim,
             Language::Odin,
             Language::Hare,
+            Language::ScriptC,
         ]
+    }
+
+    /// Whether equilibrium can emit a consumer wrapper for this language.
+    ///
+    /// scriptc is a producer only: it calls C through `--ffi` manifests
+    /// instead of generated wrappers, so it has no renderer in `imports`.
+    pub fn supports_imports(&self) -> bool {
+        !matches!(self, Language::ScriptC)
+    }
+
+    /// The languages `eq generate --consumer all` writes wrappers for.
+    pub fn import_targets() -> Vec<Language> {
+        Self::all()
+            .iter()
+            .copied()
+            .filter(Language::supports_imports)
+            .collect()
     }
 }
 
@@ -312,6 +353,11 @@ pub fn find_binary(bin: &str, extra_paths: &[&str]) -> Option<PathBuf> {
             .map(|p| PathBuf::from(p).join(bin))
             .find(|p| p.exists())
     })
+}
+
+/// Resolve a tool on `PATH` or under the well-known package-manager bin dirs.
+pub(crate) fn find_tool(bin: &str) -> Option<PathBuf> {
+    find_binary(bin, WELL_KNOWN_BIN_DIRS)
 }
 
 /// Query version string using compiler-specific args (e.g. `zig version`).
@@ -456,6 +502,20 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_scriptc() {
+        for name in [
+            "lib.ts", "lib.mts", "lib.cts", "lib.js", "lib.mjs", "lib.cjs",
+        ] {
+            assert_eq!(detect_language(Path::new(name)), Some(Language::ScriptC));
+        }
+        // Declaration files share the extension family and detect the same way.
+        assert_eq!(
+            detect_language(Path::new("lib.d.ts")),
+            Some(Language::ScriptC)
+        );
+    }
+
+    #[test]
     fn test_detect_c_and_header() {
         assert_eq!(detect_language(Path::new("main.c")), Some(Language::C));
         assert_eq!(detect_language(Path::new("lib.h")), Some(Language::C));
@@ -477,7 +537,7 @@ mod tests {
     #[test]
     fn test_detect_unknown() {
         assert_eq!(detect_language(Path::new("foo.py")), None);
-        assert_eq!(detect_language(Path::new("foo.js")), None);
+        assert_eq!(detect_language(Path::new("foo.rb")), None);
         assert_eq!(detect_language(Path::new("Makefile")), None);
     }
 
@@ -490,7 +550,28 @@ mod tests {
 
     #[test]
     fn test_all_languages() {
-        assert_eq!(Language::all().len(), 10);
+        assert_eq!(Language::all().len(), 11);
+    }
+
+    #[test]
+    fn test_import_targets_skip_producer_only_languages() {
+        assert!(!Language::ScriptC.supports_imports());
+        assert!(!Language::import_targets().contains(&Language::ScriptC));
+        assert_eq!(Language::import_targets().len(), Language::all().len() - 1);
+    }
+
+    #[test]
+    fn test_cli_name_round_trip() {
+        for language in Language::all() {
+            assert_eq!(
+                Language::from_cli_name(language.cli_name()),
+                Some(*language)
+            );
+        }
+        assert_eq!(
+            Language::from_cli_name("typescript"),
+            Some(Language::ScriptC)
+        );
     }
 
     #[test]
@@ -566,6 +647,23 @@ mod tests {
         } else {
             assert!(args.contains(&"-reloc-mode:pic".to_string()));
         }
+    }
+
+    #[test]
+    fn test_to_c_args_scriptc_library_mode() {
+        let args = Language::ScriptC.to_c_args("/src/math.ts", "/out/libmath.a");
+        assert!(args.contains(&"build".to_string()));
+        assert!(args.contains(&"--lib".to_string()));
+        assert!(args.contains(&"--no-keep-c".to_string()));
+        let profile = args
+            .iter()
+            .position(|arg| arg == "--profile")
+            .map(|index| args[index + 1].clone())
+            .expect("--profile is followed by its path");
+        assert_eq!(profile, "/out/math.profile.json");
+        assert!(args.contains(&"/out/libmath.a".to_string()));
+        // Library mode takes its input from the profile, never as a positional.
+        assert!(!args.contains(&"/src/math.ts".to_string()));
     }
 
     #[test]
