@@ -1016,7 +1016,12 @@ export function ping(): void {}
     #[test]
     fn profile_path_sits_beside_the_archive() {
         let path = profile_path(Path::new("/src/math.ts"), Path::new("/out/libmath.a"));
-        assert_eq!(path, PathBuf::from("/out/math.profile.json"));
+        // Compare the parts, not the separator style.
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("math.profile.json")
+        );
+        assert_eq!(path.parent().and_then(|dir| dir.to_str()), Some("/out"));
     }
 
     /// A module plus a target config that refines its ABI.

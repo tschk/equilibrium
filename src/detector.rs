@@ -660,7 +660,13 @@ mod tests {
             .position(|arg| arg == "--profile")
             .map(|index| args[index + 1].clone())
             .expect("--profile is followed by its path");
-        assert_eq!(profile, "/out/math.profile.json");
+        // Compare the parts, not the separator style.
+        let profile = Path::new(&profile);
+        assert_eq!(
+            profile.file_name().and_then(|name| name.to_str()),
+            Some("math.profile.json")
+        );
+        assert_eq!(profile.parent().and_then(|dir| dir.to_str()), Some("/out"));
         assert!(args.contains(&"/out/libmath.a".to_string()));
         // Library mode takes its input from the profile, never as a positional.
         assert!(!args.contains(&"/src/math.ts".to_string()));
