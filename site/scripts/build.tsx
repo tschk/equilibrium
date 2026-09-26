@@ -11,14 +11,18 @@ import { createHash } from "node:crypto";
 import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../src/routes/index";
 
-const body = renderToStaticMarkup(<Home />);
+// Cache-bust: content-hashed filenames, so a new deploy never pairs fresh
+// HTML with cached stylesheet or favicon.
+const bust = (file: string) => {
+	const hash = createHash("sha256").update(readFileSync(`dist/${file}`)).digest("hex").slice(0, 8);
+	const hashed = file.replace(/(\.[^.]+)$/, `.${hash}$1`);
+	renameSync(`dist/${file}`, `dist/${hashed}`);
+	return hashed;
+};
+const cssName = bust("styles.css");
+const iconName = bust("favicon.svg");
 
-// Cache-bust: the Tailwind output gets a content hash in its filename, so a
-// new deploy never pairs fresh HTML with a cached stylesheet.
-const css = readFileSync("dist/styles.css");
-const cssHash = createHash("sha256").update(css).digest("hex").slice(0, 8);
-const cssName = `styles.${cssHash}.css`;
-renameSync("dist/styles.css", `dist/${cssName}`);
+const body = renderToStaticMarkup(<Home />).replaceAll("./favicon.svg", `./${iconName}`);
 
 const title = "Equilibrium — C FFI generation for C-compiling languages";
 const description =
@@ -35,7 +39,7 @@ const html = `<!doctype html>
 <link rel="canonical" href="${canonical}" />
 <meta name="theme-color" content="#09090b" />
 <meta name="generator" content="moonshine + crepuscularity" />
-<link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="./${iconName}" type="image/svg+xml" />
 <link rel="stylesheet" href="./${cssName}" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Equilibrium" />
