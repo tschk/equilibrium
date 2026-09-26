@@ -11,6 +11,9 @@ Any Windows 10/11 machine with a GPU (or the WARP software renderer) works.
    - (Or a full Visual Studio install)
 3. **C/C++ compiler** — already included in VS Build Tools (cl.exe)
 4. **Zig** *(optional)* — https://ziglang.org/download/ — adds the Zig FFI module
+5. **scriptc** *(optional)* — https://scriptc.dev/quickstart — adds the TypeScript FFI module
+   (needs Node.js 24+; its library lane also needs clang or zig, and equilibrium
+   selects `SCRIPTC_CC=zigcc` when zig is on `PATH`)
 
 ## Build
 
@@ -36,8 +39,8 @@ The binary lands at `target\release\polyglot-gui.exe`.
 ```
 
 A native Windows window opens. Click **−**, **+**, **×2**, or **reset**
-to change n; live FFI results from C, C++, Zig (if installed), and Rust
-update instantly on every click.
+to change n; live FFI results from C, C++, Zig (if installed), TypeScript
+(if scriptc is installed), and Rust update instantly on every click.
 
 ## TUI fallback (works in any terminal, including WSL2)
 

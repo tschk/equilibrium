@@ -5,7 +5,7 @@ div relative w-full h-full overflow-hidden tui:background-black gpui:bg-[#050507
         div rounded-lg border border-cyan-700 bg-[#071015] px-4 py-2
           "Pipeline · n={n}"
         div rounded-lg border border-[#27272a] bg-[#08080a] px-4 py-2
-          "linked {linked_count}/8 · missing {missing_count}"
+          "linked {linked_count}/9 · missing {missing_count}"
         div flex-1 rounded-lg border border-[#27272a] bg-[#08080a] p-2
           {parts.pipeline_controls}
       div flex-1 overflow-hidden rounded-lg border border-[#27272a] bg-[#09090b] p-4 flex flex-col gap-3
@@ -34,6 +34,9 @@ div relative w-full h-full overflow-hidden tui:background-black gpui:bg-[#050507
               else if {lang == "Odin"}
                 span font-bold text-rose-400
                   "{lang}"
+              else if {lang == "TypeScript"}
+                span font-bold text-indigo-400
+                  "{lang}"
               else
                 span font-bold text-fuchsia-400
                   "{lang}"
@@ -48,11 +51,11 @@ div relative w-full h-full overflow-hidden tui:background-black gpui:bg-[#050507
   if {is_tui}
     div flex-1 flex-col gap-1 p-1 tui:background-black gpui:bg-[#050507]
       div h-[3] border border-cyan-700 tui:background-black gpui:bg-[#071015] p-1
-        "Pipeline (Math Display)  n={n}  linked={linked_count}/8  missing={missing_count}  [left/right] +/-1 [d] x2 [s] /2 [r] reset  [q] quit"
+        "Pipeline (Math Display)  n={n}  linked={linked_count}/9  missing={missing_count}  [left/right] +/-1 [d] x2 [s] /2 [r] reset  [q] quit"
       div flex-1 border border-[#27272a] tui:background-black gpui:bg-[#09090b] p-1 tui:overflow-y-scroll scroll-offset={pipeline_scroll}
         for (lang, linked, result, status, accent) in {tui_rows}
           div h-[2] flex-row
-            span w-[8] font-bold {accent} class:text-gray-500={!linked}
+            span w-[12] font-bold {accent} class:text-gray-500={!linked}
               "{lang}"
             span w-[8] text-green-400 class:text-gray-500={!linked}
               "{status}"

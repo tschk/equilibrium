@@ -9,7 +9,10 @@ use crossterm::{
     style::{Color as CrosstermColor, ResetColor, SetBackgroundColor, SetForegroundColor},
     terminal::{Clear, ClearType},
 };
-use ratatui::{style::{Color, Style}, DefaultTerminal, Frame};
+use ratatui::{
+    style::{Color, Style},
+    DefaultTerminal, Frame,
+};
 use std::io;
 
 mod polyglot;
@@ -43,7 +46,7 @@ impl App {
         self.n = 7;
     }
     fn scroll_pipeline(&mut self, amount: isize) {
-        self.pipeline_scroll = self.pipeline_scroll.saturating_add_signed(amount).min(7);
+        self.pipeline_scroll = self.pipeline_scroll.saturating_add_signed(amount).min(8);
     }
 }
 
@@ -137,7 +140,8 @@ mod tests {
 
     #[test]
     fn renders_pipeline_from_shared_crepus_layout() {
-        let backend = TestBackend::new(120, 32);
+        // Tall enough for every language row, including the newest one.
+        let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).unwrap();
         let app = App::new();
 
@@ -152,9 +156,20 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        for lang in ["C", "C++", "Zig", "Nim", "V", "D", "Odin", "Rust"] {
+        for lang in [
+            "C",
+            "C++",
+            "Zig",
+            "Nim",
+            "V",
+            "D",
+            "Odin",
+            "Rust",
+            "TypeScript",
+        ] {
             assert!(text.contains(lang), "missing language row: {lang}");
         }
         assert!(text.contains("Pipeline"));
+        assert!(text.contains("/9"));
     }
 }

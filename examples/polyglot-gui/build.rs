@@ -79,6 +79,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(has_v)");
     println!("cargo::rustc-check-cfg=cfg(has_d)");
     println!("cargo::rustc-check-cfg=cfg(has_odin)");
+    println!("cargo::rustc-check-cfg=cfg(has_ts)");
 
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let foreign = manifest.join("foreign-code");
@@ -306,6 +307,47 @@ fn main() {
         }
     }
     println!("cargo:rerun-if-changed=foreign-code/odin_module.odin");
+
+    // ── TypeScript module (when scriptc is on PATH) ─────────────────────────
+    // equilibrium compiles the module through scriptc's library mode: it
+    // derives the library profile and a C header from the `export function`
+    // declarations (plus `equilibrium.toml`'s marshalling classes), builds the
+    // self-contained archive, writes the bindings, and emits the cargo link
+    // directives for it.
+    if find_bin(
+        "scriptc",
+        &[
+            "/usr/local/bin/scriptc",
+            "/home/linuxbrew/.linuxbrew/bin/scriptc",
+            "/opt/homebrew/bin/scriptc",
+        ],
+    )
+    .is_some()
+    {
+        match equilibrium_ffi::load_with_options(
+            foreign.join("ts.ts"),
+            equilibrium_ffi::LoadOptions::default()
+                .output_dir(out_dir.join("scriptc"))
+                .config_path(manifest.join("equilibrium.toml")),
+        ) {
+            Ok(module) => {
+                match module.bindings_code() {
+                    Some(code) => {
+                        std::fs::write(out_dir.join("ts_bindings.rs"), code)
+                            .expect("write TypeScript bindings");
+                        println!("cargo::rustc-cfg=has_ts");
+                    }
+                    None => eprintln!("cargo:warning=scriptc module produced no bindings"),
+                }
+                for warning in &module.warnings {
+                    println!("cargo:warning={warning}");
+                }
+            }
+            Err(e) => eprintln!("cargo:warning=TypeScript module not linked: {e}"),
+        }
+    }
+    println!("cargo:rerun-if-changed=foreign-code/ts.ts");
+    println!("cargo:rerun-if-changed=equilibrium.toml");
 }
 
 fn emit_bindings(header: &std::path::Path, out_dir: &std::path::Path, filename: &str) {

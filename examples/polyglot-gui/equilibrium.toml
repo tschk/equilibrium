@@ -1,0 +1,12 @@
+# Target settings for the dashboard's TypeScript module.
+#
+# `language` + `sources` select the target that governs `foreign-code/ts.ts`,
+# and `signatures` refines the marshalling classes scriptc uses for `mix`, so
+# the host passes C-native u32 tags instead of doubles.
+
+[target.ts]
+language = "scriptc"
+sources = ["foreign-code/ts.ts"]
+
+[target.ts.signatures]
+mix = { params = ["u32", "u32"], returns = "f64" }
