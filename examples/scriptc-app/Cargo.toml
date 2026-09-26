@@ -1,0 +1,11 @@
+[package]
+name = "scriptc-app"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+equilibrium-ffi = { path = "../.." }
+
+[build-dependencies]
+equilibrium-ffi = { path = "../.." }

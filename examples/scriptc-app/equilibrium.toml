@@ -1,0 +1,13 @@
+# Target settings for the scriptc demo module.
+#
+# `language` + `sources` select the target that governs `foreign-code/math.ts`,
+# and `signatures` refines the marshalling classes scriptc uses per export:
+# the host then passes these values in their C-native widths instead of doubles.
+
+[target.math]
+language = "scriptc"
+sources = ["foreign-code/math.ts"]
+
+[target.math.signatures]
+mix = { params = ["u32", "u32"], returns = "f64" }
+truncate = { returns = "i64" }
