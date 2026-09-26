@@ -6,11 +6,19 @@
  * to a single HTML document in dist/, next to the Tailwind-built stylesheet
  * and everything in public/.
  */
-import { mkdirSync, cpSync, writeFileSync } from "node:fs";
+import { mkdirSync, cpSync, writeFileSync, readFileSync, renameSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../src/routes/index";
 
 const body = renderToStaticMarkup(<Home />);
+
+// Cache-bust: the Tailwind output gets a content hash in its filename, so a
+// new deploy never pairs fresh HTML with a cached stylesheet.
+const css = readFileSync("dist/styles.css");
+const cssHash = createHash("sha256").update(css).digest("hex").slice(0, 8);
+const cssName = `styles.${cssHash}.css`;
+renameSync("dist/styles.css", `dist/${cssName}`);
 
 const title = "Equilibrium — C FFI generation for C-compiling languages";
 const description =
@@ -28,7 +36,7 @@ const html = `<!doctype html>
 <meta name="theme-color" content="#09090b" />
 <meta name="generator" content="moonshine + crepuscularity" />
 <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="./styles.css" />
+<link rel="stylesheet" href="./${cssName}" />
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="Equilibrium" />
 <meta property="og:title" content="${title}" />
