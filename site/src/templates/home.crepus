@@ -13,7 +13,7 @@ div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mo
 		main pt-8 pb-14 sm:pt-12 sm:pb-20
 			section mb-16
 				p text-[11px] uppercase tracking-[0.2em] text-purple-400 mb-4
-					"equilibrium-ffi 0.3 · MIT · Rust + C ABI"
+					"equilibrium-ffi 0.3 · ISC · Rust + C ABI"
 				h1 text-2xl sm:text-3xl md:text-4xl font-semibold text-zinc-100 tracking-tight leading-tight max-w-2xl mb-5
 					"Load foreign code with "
 					span text-purple-400
@@ -136,7 +136,7 @@ div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mo
 		footer border-t border-zinc-800 mt-4
 			div max-w-4xl mx-auto px-5 sm:px-8 lg:px-10 py-6 flex flex-wrap items-center justify-between gap-3 text-[11px] text-zinc-500
 				p
-					"equilibrium · MIT · built with crepuscularity + moonshine"
+					"equilibrium · ISC · built with crepuscularity + moonshine"
 				div flex items-center gap-4
 					a href="https://github.com/tschk/equilibrium" text-zinc-400 hover:text-zinc-100 no-underline target="_blank" rel="noopener noreferrer"
 						"GitHub"
