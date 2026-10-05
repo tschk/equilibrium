@@ -334,8 +334,26 @@ pub fn find_binary(bin: &str, extra_paths: &[&str]) -> Option<PathBuf> {
         extra_paths
             .iter()
             .map(|p| PathBuf::from(p).join(bin))
-            .find(|p| p.exists())
+            .find(|p| is_executable_file(p))
     })
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// Resolve a tool on `PATH` or under the well-known package-manager bin dirs.
@@ -441,6 +459,23 @@ pub fn scan_directory(dir: &Path) -> Vec<(std::path::PathBuf, Language)> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn find_binary_only_accepts_executable_regular_files_in_extra_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let extra = dir.path().to_str().unwrap().to_string();
+        std::fs::create_dir(dir.path().join("eqtestdir")).unwrap();
+        assert_eq!(find_binary("eqtestdir", &[&extra]), None);
+        let plain = dir.path().join("eqtestplain");
+        std::fs::write(&plain, "x").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(find_binary("eqtestplain", &[&extra]), None);
+        let exe = dir.path().join("eqtestexe");
+        std::fs::write(&exe, "x").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(find_binary("eqtestexe", &[&extra]), Some(exe));
+    }
     use super::*;
     use tempfile::tempdir;
 
