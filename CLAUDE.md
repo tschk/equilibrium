@@ -50,7 +50,7 @@ Equilibrium is a Rust library that auto-generates C FFI bindings for foreign-lan
 The `eq` binary (feature-gated behind `cli`) provides four subcommands:
 
 - `eq check` — detects all supported compilers and shows versions/paths
-- `eq install [names…]` — installs missing compilers via the best available package manager; multiple compilers install in parallel. Install order: **wax → brew/linuxbrew → apt/dnf/pacman** on Linux/macOS, **wax → winget → scoop** on Windows.
+- `eq install [names…]` — installs missing compilers via the best available package manager, one compiler at a time (brew and apt hold locks, so parallel installs would race). Each install is verified by re-detecting the compiler; a manager that reports success without installing is treated as failed and the next manager is tried. `--from-rig [rig.toml]` also installs what a rig.toml needs. Install order: **wax → brew/linuxbrew → apt/dnf/pacman** on Linux/macOS, **wax → winget → scoop** on Windows.
 - `eq build [args…]` — runs `cargo build` with all known compiler bin dirs prepended to PATH (linuxbrew, homebrew, `/usr/local/sbin`, etc.)
 - `eq generate <header> [-o file]` — emits Rust `extern "C"` bindings from a C header via `equilibrium_ffi::generate_bindings`
 

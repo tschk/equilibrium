@@ -74,8 +74,21 @@ fn default_version_args() -> Vec<String> {
 }
 
 fn load_compilers() -> Vec<Compiler> {
-    const RAW: &str = include_str!("compilers.toml");
-    let file: File = toml::from_str(RAW).expect("parse compilers.toml");
+    const BUNDLED: &str = include_str!("compilers.toml");
+    let raw = match std::env::var_os("EQ_COMPILERS_FILE") {
+        Some(path) => std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            eprintln!(
+                "eq: cannot read EQ_COMPILERS_FILE {}: {e}",
+                path.to_string_lossy()
+            );
+            std::process::exit(2);
+        }),
+        None => BUNDLED.to_string(),
+    };
+    let file: File = toml::from_str(&raw).unwrap_or_else(|e| {
+        eprintln!("eq: invalid compiler catalogue: {e}");
+        std::process::exit(2);
+    });
     file.compiler
         .into_iter()
         .map(|e| {

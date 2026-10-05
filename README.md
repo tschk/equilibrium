@@ -17,7 +17,7 @@ cargo install --path . --features cli
 # Check which compilers are installed
 eq check
 
-# Install missing compilers (interactive multi-select, parallel)
+# Install missing compilers (interactive multi-select; needs a terminal)
 eq install
 
 # Install specific compilers
@@ -42,7 +42,9 @@ eq generate mylib.h --consumer all --out-dir generated-imports
 
 npm is a fallback for tools the JS ecosystem ships (`scriptc`).
 
-Multiple compilers install in parallel.
+Compilers install one at a time. Each install is verified, and a package manager that exits successfully without actually installing the compiler counts as a failure, so the next manager is tried. With no names and no terminal, `eq install` fails instead of doing nothing.
+
+`eq install --from-rig [rig.toml]` also installs the compilers a [rig](https://github.com/tschk/rig) manifest needs (host language and dependency ecosystems; `rust`, `cargo`, `c` and `cpp` need nothing installed, and unknown names are an error). Environment: `EQ_INSTALL_YES=1` approves sudo for apt/dnf/pacman without a prompt (sudo is only asked for when one of those managers is about to run), `EQ_INSTALL_NO_SUDO=1` skips those managers entirely, `EQ_INSTALL_MANAGERS=wax,brew` restricts which managers may be used, and `EQ_COMPILERS_FILE=path.toml` replaces the bundled compiler catalogue.
 
 ### Security (dev tool)
 

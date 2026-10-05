@@ -4,6 +4,7 @@
 //!   eq check              — show which compilers are installed
 //!   eq install            — interactive multi-select installer
 //!   eq install zig nim … — install specific compilers directly
+//!   eq install --from-rig [rig.toml] — install what a rig.toml needs
 //!   eq build [ARGS…]      — cargo build with compilers on PATH
 //!   `eq generate <PATH>`    — emit bindings or consumer wrappers from a header or source
 
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 mod catalog;
+mod rig_manifest;
 use catalog::{compilers, extra_path_refs, version_arg_refs, Compiler, Install};
 
 // ── CLI definition ────────────────────────────────────────────────────────────
@@ -35,6 +37,9 @@ enum Cmd {
     Install {
         /// Install these specific compilers instead of showing a selector
         names: Vec<String>,
+        /// Also install the compilers a rig.toml needs (default path: ./rig.toml)
+        #[arg(long, value_name = "PATH", num_args = 0..=1, default_missing_value = "rig.toml")]
+        from_rig: Option<PathBuf>,
     },
     /// Run `cargo build` with all compilers added to PATH
     Build {
@@ -185,9 +190,6 @@ impl PkgMgr {
 
     /// Whether this manager needs sudo on Linux
     fn needs_sudo(self) -> bool {
-        if std::env::var_os("EQ_INSTALL_NO_SUDO").is_some() {
-            return false;
-        }
         matches!(self, PkgMgr::Apt | PkgMgr::Dnf | PkgMgr::Pacman)
     }
 }
@@ -248,7 +250,34 @@ fn available_managers() -> Vec<PkgMgr> {
         v.push(PkgMgr::Npm);
     }
 
-    v
+    if std::env::var_os("EQ_INSTALL_NO_SUDO").is_some() {
+        v = without_system_managers(v);
+    }
+    filter_managers(v, std::env::var("EQ_INSTALL_MANAGERS").ok().as_deref())
+}
+
+fn without_system_managers(found: Vec<PkgMgr>) -> Vec<PkgMgr> {
+    found.into_iter().filter(|m| !m.needs_sudo()).collect()
+}
+
+fn filter_managers(found: Vec<PkgMgr>, allow: Option<&str>) -> Vec<PkgMgr> {
+    let Some(allow) = allow else {
+        return found;
+    };
+    let wanted: Vec<&str> = allow
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    found
+        .into_iter()
+        .filter(|m| {
+            wanted.iter().any(|w| {
+                w.eq_ignore_ascii_case(m.cmd())
+                    || (*m == PkgMgr::Apt && w.eq_ignore_ascii_case("apt"))
+            })
+        })
+        .collect()
 }
 
 fn install_cwd() -> Option<PathBuf> {
@@ -273,6 +302,41 @@ fn spawn_status(mut cmd: Command) -> std::io::Result<std::process::ExitStatus> {
         cmd.current_dir(dir);
     }
     cmd.status()
+}
+
+fn is_installed(c: &Compiler) -> bool {
+    find_binary(&c.bin, &extra_path_refs(&c.extra_paths)).is_some()
+}
+
+fn sudo_decision(yes: bool, interactive: bool, ask: impl FnOnce() -> bool) -> bool {
+    if yes {
+        return true;
+    }
+    if !interactive {
+        eprintln!(
+            "{} refusing to run sudo without a TTY. Re-run interactively, or set EQ_INSTALL_YES=1 (or EQ_INSTALL_NO_SUDO=1 to skip system package managers).",
+            style("!").yellow()
+        );
+        return false;
+    }
+    ask()
+}
+
+fn sudo_approved() -> bool {
+    static DECISION: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DECISION.get_or_init(|| {
+        sudo_decision(
+            std::env::var_os("EQ_INSTALL_YES").is_some(),
+            std::io::stdin().is_terminal(),
+            || {
+                Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Installing system packages requires sudo. Continue?")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false)
+            },
+        )
+    })
 }
 
 fn install_compiler(c: &Compiler) -> bool {
@@ -307,6 +371,14 @@ fn install_compiler(c: &Compiler) -> bool {
         }
 
         let args = mgr.install_args(pkg);
+        if mgr.needs_sudo() && !sudo_approved() {
+            println!(
+                "  {} skipping {}: sudo not approved",
+                style("!").yellow(),
+                mgr.cmd()
+            );
+            continue;
+        }
         let cmd_display = if mgr.needs_sudo() {
             format!("sudo {} {}", mgr.cmd(), args.join(" "))
         } else {
@@ -336,9 +408,18 @@ fn install_compiler(c: &Compiler) -> bool {
             spawn_status(cmd)
         };
 
-        if status.map(|s| s.success()).unwrap_or(false) {
+        if !status.map(|s| s.success()).unwrap_or(false) {
+            continue;
+        }
+        if is_installed(c) {
             return true;
         }
+        println!(
+            "  {} {} reported success but `{}` was not found on PATH or in the known package-manager bin dirs; trying the next manager",
+            style("!").yellow(),
+            mgr.cmd(),
+            c.bin
+        );
     }
 
     println!(
@@ -349,7 +430,36 @@ fn install_compiler(c: &Compiler) -> bool {
     false
 }
 
-fn cmd_install(names: Vec<String>) -> ExitCode {
+fn cmd_install(mut names: Vec<String>, from_rig: Option<PathBuf>) -> ExitCode {
+    if let Some(path) = from_rig {
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("{} cannot read {}: {e}", style("✗").red(), path.display());
+                return ExitCode::FAILURE;
+            }
+        };
+        match rig_manifest::compilers_for(&text) {
+            Ok(ids) => {
+                if ids.is_empty() {
+                    println!(
+                        "{} {} needs no installable compilers.",
+                        style("✓").green(),
+                        path.display()
+                    );
+                }
+                names.extend(ids);
+            }
+            Err(e) => {
+                eprintln!("{} {e}", style("✗").red());
+                return ExitCode::FAILURE;
+            }
+        }
+        if names.is_empty() {
+            return ExitCode::SUCCESS;
+        }
+    }
+
     let statuses = check_all();
 
     if !names.is_empty() {
@@ -371,7 +481,7 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
                         style("✓").green(),
                         s.compiler.lang
                     );
-                } else {
+                } else if !to_install.iter().any(|c| c.id == s.compiler.id) {
                     to_install.push(s.compiler);
                 }
             } else {
@@ -390,10 +500,6 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
                 ExitCode::SUCCESS
             };
         }
-        if !confirm_privileged_install() {
-            println!("Aborted.");
-            return ExitCode::FAILURE;
-        }
         let install_ok = run_installs(&to_install);
         return if had_error {
             ExitCode::FAILURE
@@ -402,7 +508,6 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
         };
     }
 
-    // Interactive multi-select for missing compilers
     let missing: Vec<&Status> = statuses
         .iter()
         .filter(|s| s.compiler.supported && s.path.is_none())
@@ -414,6 +519,19 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
             style("✓").green()
         );
         return ExitCode::SUCCESS;
+    }
+
+    if !std::io::stdin().is_terminal() {
+        eprintln!(
+            "{} no compilers named and no terminal for the selector. Name them (eq install zig nim), or use --from-rig. Missing: {}",
+            style("✗").red(),
+            missing
+                .iter()
+                .map(|s| s.compiler.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return ExitCode::FAILURE;
     }
 
     let items: Vec<String> = missing
@@ -431,10 +549,6 @@ fn cmd_install(names: Vec<String>) -> ExitCode {
         Ok(Some(chosen)) if !chosen.is_empty() => {
             let selected: Vec<&'static Compiler> =
                 chosen.iter().map(|&i| missing[i].compiler).collect();
-            if !confirm_privileged_install() {
-                println!("Aborted.");
-                return ExitCode::FAILURE;
-            }
             run_installs(&selected)
         }
         _ => {
@@ -450,31 +564,6 @@ fn compiler_matches(c: &Compiler, name: &str) -> bool {
         || c.bin.eq_ignore_ascii_case(&n)
         || c.lang.eq_ignore_ascii_case(name)
         || (c.id == "dotnet" && matches!(n.as_str(), "csharp" | "c#" | "cs"))
-}
-
-fn sudo_may_be_used() -> bool {
-    available_managers().iter().any(|mgr| mgr.needs_sudo())
-}
-
-fn confirm_privileged_install() -> bool {
-    if !sudo_may_be_used() {
-        return true;
-    }
-    if std::env::var_os("EQ_INSTALL_YES").is_some() {
-        return true;
-    }
-    if !std::io::stdin().is_terminal() {
-        eprintln!(
-            "{} refusing to run sudo without a TTY. Re-run interactively, or set EQ_INSTALL_YES=1 (or EQ_INSTALL_NO_SUDO=1 to skip system package managers).",
-            style("!").yellow()
-        );
-        return false;
-    }
-    Confirm::with_theme(&ColorfulTheme::default())
-        .with_prompt("Installing system packages requires sudo. Continue?")
-        .default(false)
-        .interact()
-        .unwrap_or(false)
 }
 
 fn run_installs(compilers: &[&'static Compiler]) -> ExitCode {
@@ -819,7 +908,7 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Cmd::Check => cmd_check(),
-        Cmd::Install { names } => cmd_install(names),
+        Cmd::Install { names, from_rig } => cmd_install(names, from_rig),
         Cmd::Build { args } => cmd_build(args),
         Cmd::Generate {
             header,
@@ -827,5 +916,51 @@ fn main() -> ExitCode {
             consumer,
             out_dir,
         } => cmd_generate(header, output, consumer, out_dir),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sudo_is_approved_by_flag_without_asking() {
+        assert!(sudo_decision(true, false, || panic!("must not ask")));
+    }
+
+    #[test]
+    fn sudo_is_refused_without_a_terminal_and_never_asks() {
+        assert!(!sudo_decision(false, false, || panic!("must not ask")));
+    }
+
+    #[test]
+    fn sudo_follows_the_interactive_answer() {
+        assert!(sudo_decision(false, true, || true));
+        assert!(!sudo_decision(false, true, || false));
+    }
+
+    #[test]
+    fn no_sudo_mode_drops_the_system_managers_instead_of_running_them_unprivileged() {
+        let found = vec![
+            PkgMgr::Wax,
+            PkgMgr::Brew,
+            PkgMgr::Apt,
+            PkgMgr::Dnf,
+            PkgMgr::Pacman,
+            PkgMgr::Npm,
+        ];
+        assert!(without_system_managers(found) == vec![PkgMgr::Wax, PkgMgr::Brew, PkgMgr::Npm]);
+    }
+
+    #[test]
+    fn manager_filter_keeps_preference_order_and_ignores_unknown_names() {
+        let found = vec![PkgMgr::Wax, PkgMgr::Brew, PkgMgr::Apt, PkgMgr::Npm];
+        assert!(filter_managers(found.clone(), None) == found);
+        assert!(
+            filter_managers(found.clone(), Some("brew, wax")) == vec![PkgMgr::Wax, PkgMgr::Brew]
+        );
+        assert!(filter_managers(found.clone(), Some("apt")) == vec![PkgMgr::Apt]);
+        assert!(filter_managers(found.clone(), Some("bogus")).is_empty());
+        assert!(filter_managers(found, Some("")).is_empty());
     }
 }
