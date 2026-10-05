@@ -60,7 +60,7 @@ const html = `<!doctype html>
   "description": ${JSON.stringify(description)},
   "codeRepository": "https://github.com/tschk/equilibrium",
   "programmingLanguage": "Rust",
-  "license": "https://opensource.org/licenses/MIT",
+  "license": "https://github.com/tschk/equilibrium/blob/main/LICENSE",
   "url": "${canonical}"
 }
 </script>
