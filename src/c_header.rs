@@ -4,6 +4,7 @@ use std::path::Path;
 pub(crate) struct ParsedHeader {
     pub(crate) typedefs: Vec<TypedefDef>,
     pub(crate) structs: Vec<StructDef>,
+    pub(crate) unions: Vec<StructDef>,
     pub(crate) enums: Vec<EnumDef>,
     pub(crate) functions: Vec<FunctionDef>,
 }
@@ -88,6 +89,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
 
     let mut typedefs = Vec::new();
     let mut structs = Vec::new();
+    let mut unions = Vec::new();
     let mut enums = Vec::new();
     let mut functions = Vec::new();
 
@@ -145,6 +147,30 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                     });
                     structs.push(parsed);
                 }
+            } else if line.contains("union") && line.contains('{') {
+                let mut union_content = String::new();
+                let mut extend_lines = 0usize;
+                while i < lines.len() && !lines[i].contains('}') {
+                    extend_lines += 1;
+                    if extend_lines > MAX_TYPEDEF_BLOCK_LINES {
+                        break;
+                    }
+                    union_content.push_str(lines[i]);
+                    union_content.push(' ');
+                    i += 1;
+                }
+                if i < lines.len() && lines[i].contains('}') {
+                    union_content.push_str(lines[i]);
+                }
+                // A union body parses like a struct body (name after `}`, fields between braces).
+                if let Some(parsed) = parse_typedef_struct(&union_content) {
+                    typedefs.push(TypedefDef {
+                        name: parsed.name.clone(),
+                        target: format!("union {}", parsed.name),
+                        rust_override: None,
+                    });
+                    unions.push(parsed);
+                }
             } else if line.ends_with(';') {
                 if line.contains("(*") {
                     if let Some((name, rust_type)) = parse_typedef_fnptr(line) {
@@ -183,6 +209,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     ParsedHeader {
         typedefs,
         structs,
+        unions,
         enums,
         functions,
     }
@@ -724,6 +751,19 @@ mod type_mapping_tests {
         assert_eq!(c_type_to_rust("uint8_t[256]"), "[u8; 256]");
         assert_eq!(c_type_to_rust("int[4][4]"), "[[c_int; 4]; 4]");
         assert_eq!(c_type_to_rust("char[]"), "[c_char; 0]");
+    }
+
+    #[test]
+    fn union_typedef_is_parsed_and_available() {
+        use super::parse_c_header;
+        let h = parse_c_header(
+            "typedef union Value { int32_t i; double d; void *ptr; } Value;\nint use_value(Value *v);",
+        );
+        assert_eq!(h.unions.len(), 1);
+        assert_eq!(h.unions[0].name, "Value");
+        assert_eq!(h.unions[0].fields.len(), 3);
+        // The function using it survives (the union type is defined, not opaque-dropped).
+        assert!(h.functions.iter().any(|f| f.name == "use_value"));
     }
 
     #[test]

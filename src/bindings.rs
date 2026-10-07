@@ -127,6 +127,15 @@ fn emit_bindings_from_parsed(
         }
     }
 
+    for union_def in &parsed.unions {
+        if should_include(&union_def.name, &options.allowlist_types) {
+            if let Some(generated) = generate_union(union_def, warnings) {
+                code.push_str(&generated);
+                code.push('\n');
+            }
+        }
+    }
+
     for typedef in &parsed.typedefs {
         if should_include(&typedef.name, &options.allowlist_types) {
             let is_struct_alias = typedef.target.starts_with("struct ")
@@ -134,12 +143,17 @@ fn emit_bindings_from_parsed(
                     .structs
                     .iter()
                     .any(|s| format!("struct {}", s.name) == typedef.target);
+            let is_union_alias = typedef.target.starts_with("union ")
+                && parsed
+                    .unions
+                    .iter()
+                    .any(|u| format!("union {}", u.name) == typedef.target);
             let is_enum_alias = typedef.target.starts_with("enum ")
                 && parsed
                     .enums
                     .iter()
                     .any(|e| format!("enum {}", e.name) == typedef.target);
-            if !is_struct_alias && !is_enum_alias {
+            if !is_struct_alias && !is_union_alias && !is_enum_alias {
                 let target = typedef.target.trim();
                 let opaque_tag = target
                     .strip_prefix("struct ")
@@ -245,6 +259,36 @@ fn generate_enum(enum_def: &EnumDef, warnings: &mut Vec<String>) -> Option<Strin
     if !any {
         warnings.push(format!("Skipped empty enum: {name}"));
         return None;
+    }
+    code.push_str("}\n");
+    Some(code)
+}
+
+fn generate_union(union_def: &StructDef, warnings: &mut Vec<String>) -> Option<String> {
+    let Some(name) = rust_ident(&union_def.name) else {
+        warnings.push(format!(
+            "Skipped union with invalid name: {}",
+            union_def.name
+        ));
+        return None;
+    };
+    let mut code = String::new();
+    // No derives: C-ABI union fields (scalars, pointers, arrays of Copy) are themselves Copy so the
+    // union is valid without ManuallyDrop, but Debug/Default cannot be derived for a union.
+    code.push_str(TYPE_ALLOW);
+    code.push_str("#[repr(C)]\n");
+    code.push_str(&format!("pub union {name} {{\n"));
+    for (field_type, field_name) in &union_def.fields {
+        let Some(field) = rust_ident(field_name) else {
+            warnings.push(format!(
+                "Skipped field with invalid name on {name}: {field_name}"
+            ));
+            continue;
+        };
+        match c_type_to_rust_checked(field_type) {
+            Ok(rust_type) => code.push_str(&format!("    pub {field}: {rust_type},\n")),
+            Err(reason) => warnings.push(format!("Skipped field {name}.{field}: {reason}")),
+        }
     }
     code.push_str("}\n");
     Some(code)
