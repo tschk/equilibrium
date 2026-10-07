@@ -185,15 +185,45 @@ pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
             continue;
         }
 
-        let parts: Vec<&str> = field.split_whitespace().collect();
-        if parts.len() >= 2 {
-            let field_name = parts.last().unwrap().trim_end_matches('[').to_string();
-            let field_type = parts[..parts.len() - 1].join(" ");
+        if let Some((field_type, field_name)) = parse_c_field(field) {
             fields.push((field_type, field_name));
         }
     }
 
     Some(StructDef { name, fields })
+}
+
+/// Split a C field/declarator into (type, name), moving pointer stars into the type and folding
+/// trailing array dimensions into the type (`uint8_t bytes[256]` -> ("uint8_t[256]", "bytes"),
+/// `const char *name` -> ("const char *", "name")). Returns None for declarators whose name is not
+/// a plain identifier (function pointers, bitfields) — those are handled elsewhere or skipped.
+pub(crate) fn parse_c_field(decl: &str) -> Option<(String, String)> {
+    let decl = decl.trim();
+    let (head, dims) = match split_array_dims(decl) {
+        Some((h, d)) => (h, d),
+        None => (decl.to_string(), Vec::new()),
+    };
+    let head = head.trim();
+    // The name is the trailing identifier run; everything before it (incl. `*`) is the type.
+    let name_start = head
+        .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let name = &head[name_start..];
+    if !is_c_identifier(name) {
+        return None;
+    }
+    let base_type = head[..name_start].trim();
+    if base_type.is_empty() {
+        return None;
+    }
+    let mut type_str = base_type.to_string();
+    for dim in &dims {
+        type_str.push('[');
+        type_str.push_str(dim);
+        type_str.push(']');
+    }
+    Some((type_str, name.to_string()))
 }
 
 pub(crate) fn parse_typedef_enum(content: &str) -> Option<EnumDef> {
@@ -307,9 +337,37 @@ pub(crate) fn strip_ignored_qualifiers(c_type: &str) -> String {
         .join(" ")
 }
 
+/// Peel trailing C array dimensions off a type, e.g. `int [4][4]` -> ("int", ["4","4"]). Returns
+/// None when there is no array suffix.
+pub(crate) fn split_array_dims(c_type: &str) -> Option<(String, Vec<String>)> {
+    let mut cur = c_type.trim();
+    if !cur.ends_with(']') {
+        return None;
+    }
+    let mut dims = Vec::new();
+    while cur.ends_with(']') {
+        let open = cur.rfind('[')?;
+        dims.push(cur[open + 1..cur.len() - 1].trim().to_string());
+        cur = cur[..open].trim_end();
+    }
+    dims.reverse();
+    Some((cur.trim().to_string(), dims))
+}
+
 pub(crate) fn c_type_to_rust(c_type: &str) -> String {
     let normalized = strip_ignored_qualifiers(c_type);
     let c_type = normalized.trim();
+
+    // Fixed-size arrays map to Rust arrays, nesting for multiple dimensions (`int[4][4]` is an
+    // array of 4 rows of 4). An empty dimension (`[]`, a flexible member) becomes length 0.
+    if let Some((base, dims)) = split_array_dims(c_type) {
+        let mut rust = c_type_to_rust(&base);
+        for dim in dims.iter().rev() {
+            let size = if dim.is_empty() { "0" } else { dim.as_str() };
+            rust = format!("[{rust}; {size}]");
+        }
+        return rust;
+    }
 
     match c_type {
         "void" => "()".to_string(),
@@ -550,6 +608,31 @@ pub(crate) fn header_stem(path: &Path) -> String {
 #[cfg(test)]
 mod type_mapping_tests {
     use super::c_type_to_rust;
+
+    #[test]
+    fn arrays_map_to_rust_arrays() {
+        assert_eq!(c_type_to_rust("uint8_t[256]"), "[u8; 256]");
+        assert_eq!(c_type_to_rust("int[4][4]"), "[[c_int; 4]; 4]");
+        assert_eq!(c_type_to_rust("char[]"), "[c_char; 0]");
+    }
+
+    #[test]
+    fn struct_fields_keep_arrays_and_pointers() {
+        use super::parse_typedef_struct;
+        let s = parse_typedef_struct(
+            "typedef struct Buffer { uint8_t bytes[256]; size_t len; const char *name; } Buffer;",
+        )
+        .expect("parsed struct");
+        assert_eq!(s.name, "Buffer");
+        assert_eq!(
+            s.fields,
+            vec![
+                ("uint8_t[256]".to_string(), "bytes".to_string()),
+                ("size_t".to_string(), "len".to_string()),
+                ("const char *".to_string(), "name".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn qualifiers_do_not_collapse_pointers_to_void() {
