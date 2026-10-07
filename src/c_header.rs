@@ -291,8 +291,25 @@ pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
     })
 }
 
+/// Remove qualifiers that carry no Rust/ABI meaning (`volatile`, `restrict` and its spellings)
+/// wherever they appear in a C type, so `volatile int *` or `const restrict float *` map to the
+/// right pointer type instead of collapsing to the `*mut c_void` catch-all.
+pub(crate) fn strip_ignored_qualifiers(c_type: &str) -> String {
+    c_type
+        .split_whitespace()
+        .filter(|tok| {
+            !matches!(
+                *tok,
+                "volatile" | "restrict" | "__restrict" | "__restrict__"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(crate) fn c_type_to_rust(c_type: &str) -> String {
-    let c_type = c_type.trim();
+    let normalized = strip_ignored_qualifiers(c_type);
+    let c_type = normalized.trim();
 
     match c_type {
         "void" => "()".to_string(),
@@ -528,4 +545,21 @@ pub(crate) fn header_stem(path: &Path) -> String {
         .and_then(|stem| stem.to_str())
         .unwrap_or("equilibrium")
         .to_string()
+}
+
+#[cfg(test)]
+mod type_mapping_tests {
+    use super::c_type_to_rust;
+
+    #[test]
+    fn qualifiers_do_not_collapse_pointers_to_void() {
+        // volatile/restrict carry no Rust ABI meaning and must not derail the mapping.
+        assert_eq!(c_type_to_rust("volatile int *"), "*mut c_int");
+        assert_eq!(c_type_to_rust("const restrict float *"), "*const c_float");
+        assert_eq!(c_type_to_rust("int * restrict"), "*mut c_int");
+        assert_eq!(c_type_to_rust("volatile uint8_t"), "u8");
+        // unqualified mappings are unchanged.
+        assert_eq!(c_type_to_rust("const char *"), "*const c_char");
+        assert_eq!(c_type_to_rust("void *"), "*mut c_void");
+    }
 }
