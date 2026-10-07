@@ -534,16 +534,22 @@ pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
 /// wherever they appear in a C type, so `volatile int *` or `const restrict float *` map to the
 /// right pointer type instead of collapsing to the `*mut c_void` catch-all.
 pub(crate) fn strip_ignored_qualifiers(c_type: &str) -> String {
-    c_type
-        .split_whitespace()
-        .filter(|tok| {
-            !matches!(
-                *tok,
-                "volatile" | "restrict" | "__restrict" | "__restrict__"
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    // Space out `*` so the glued `*const` form tokenizes, then drop qualifiers that carry no Rust
+    // meaning: `volatile`/`restrict` anywhere, and a `const` that qualifies the pointer itself
+    // (immediately after a `*`, as in `char *const` or `const char *const *`). A `const` before the
+    // base type (the pointee's const) is kept so it still maps to `*const`.
+    let spaced = c_type.replace('*', " * ");
+    let mut out: Vec<&str> = Vec::new();
+    for tok in spaced.split_whitespace() {
+        if matches!(tok, "volatile" | "restrict" | "__restrict" | "__restrict__") {
+            continue;
+        }
+        if tok == "const" && out.last() == Some(&"*") {
+            continue; // pointer-own const: irrelevant in Rust
+        }
+        out.push(tok);
+    }
+    out.join(" ")
 }
 
 /// Peel trailing C array dimensions off a type, e.g. `int [4][4]` -> ("int", ["4","4"]). Returns
@@ -906,6 +912,18 @@ mod type_mapping_tests {
                 ("const char *".to_string(), "name".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn pointer_own_const_is_dropped_pointee_const_kept() {
+        // `const` on the pointer itself is irrelevant in Rust; `const` on the pointee -> *const.
+        assert_eq!(c_type_to_rust("char *const"), "*mut c_char");
+        assert_eq!(c_type_to_rust("const char *const *"), "*mut *const c_char");
+        assert_eq!(
+            c_type_to_rust("const char * const * const"),
+            "*mut *const c_char"
+        );
+        assert_eq!(c_type_to_rust("const char *"), "*const c_char");
     }
 
     #[test]
