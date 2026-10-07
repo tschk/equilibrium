@@ -199,6 +199,9 @@ fn generate_typedef(typedef: &TypedefDef, warnings: &mut Vec<String>) -> Option<
         ));
         return None;
     };
+    if let Some(rust_type) = &typedef.rust_override {
+        return Some(format!("{TYPE_ALLOW}pub type {name} = {rust_type};\n"));
+    }
     match c_type_to_rust_checked(&typedef.target) {
         Ok(rust_type) => Some(format!("{TYPE_ALLOW}pub type {name} = {rust_type};\n")),
         Err(reason) => {

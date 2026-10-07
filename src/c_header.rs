@@ -12,6 +12,10 @@ pub(crate) struct ParsedHeader {
 pub(crate) struct TypedefDef {
     pub(crate) name: String,
     pub(crate) target: String,
+    /// A fully-rendered Rust type to emit verbatim (e.g. a function-pointer alias), when the C
+    /// target cannot be expressed by the plain `c_type_to_rust` mapping. `None` for ordinary
+    /// typedefs, which map through `target`.
+    pub(crate) rust_override: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +118,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                     typedefs.push(TypedefDef {
                         name: parsed.name.clone(),
                         target: format!("enum {}", parsed.name),
+                        rust_override: None,
                     });
                     enums.push(parsed);
                 }
@@ -136,12 +141,25 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                     typedefs.push(TypedefDef {
                         name: parsed.name.clone(),
                         target: format!("struct {}", parsed.name),
+                        rust_override: None,
                     });
                     structs.push(parsed);
                 }
             } else if line.ends_with(';') {
-                if let Some((target, name)) = parse_typedef_line(line) {
-                    typedefs.push(TypedefDef { name, target });
+                if line.contains("(*") {
+                    if let Some((name, rust_type)) = parse_typedef_fnptr(line) {
+                        typedefs.push(TypedefDef {
+                            name,
+                            target: rust_type.clone(),
+                            rust_override: Some(rust_type),
+                        });
+                    }
+                } else if let Some((target, name)) = parse_typedef_line(line) {
+                    typedefs.push(TypedefDef {
+                        name,
+                        target,
+                        rust_override: None,
+                    });
                 }
             }
         }
@@ -266,6 +284,55 @@ pub(crate) fn parse_typedef_enum(content: &str) -> Option<EnumDef> {
     }
 
     Some(EnumDef { name, variants })
+}
+
+/// The Rust type for a single C parameter, whether named (`int code`) or unnamed (`int`, `void *`).
+fn param_type_only(param: &str) -> Option<String> {
+    let param = param.trim();
+    if param.is_empty() {
+        return None;
+    }
+    let c_type = match parse_c_field(param) {
+        Some((typ, _name)) => decay_param_type(&typ),
+        None => decay_param_type(param),
+    };
+    Some(c_type_to_rust(&c_type))
+}
+
+/// Parse a function-pointer typedef (`typedef RET (*NAME)(PARAMS);`) into its name and a
+/// fully-rendered Rust alias type. C function pointers are nullable, so the Rust type is wrapped in
+/// `Option<...>`. Returns None for anything that is not a single-line function-pointer typedef.
+pub(crate) fn parse_typedef_fnptr(line: &str) -> Option<(String, String)> {
+    let line = line.strip_prefix("typedef")?.trim();
+    let line = line.strip_suffix(';')?.trim();
+
+    let star = line.find("(*")?;
+    let ret_c = line[..star].trim();
+    let after = &line[star + 2..];
+    let close = after.find(')')?;
+    let name = after[..close].trim().trim_start_matches('*').trim();
+    if !is_c_identifier(name) {
+        return None;
+    }
+    let rest = after[close + 1..].trim();
+    let popen = rest.find('(')?;
+    let pclose = rest.rfind(')')?;
+    let params_str = rest[popen + 1..pclose].trim();
+
+    let mut params = Vec::new();
+    if params_str != "void" && !params_str.is_empty() {
+        for part in params_str.split(',') {
+            params.push(param_type_only(part)?);
+        }
+    }
+
+    let ret_rust = c_type_to_rust(ret_c);
+    let mut sig = format!("Option<unsafe extern \"C\" fn({})", params.join(", "));
+    if ret_rust != "()" {
+        sig.push_str(&format!(" -> {ret_rust}"));
+    }
+    sig.push('>');
+    Some((name.to_string(), sig))
 }
 
 pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
@@ -617,6 +684,23 @@ pub(crate) fn header_stem(path: &Path) -> String {
 #[cfg(test)]
 mod type_mapping_tests {
     use super::c_type_to_rust;
+
+    #[test]
+    fn function_pointer_typedef_emits_rust_fn_alias() {
+        use super::parse_typedef_fnptr;
+        let (name, ty) = parse_typedef_fnptr("typedef void (*callback_t)(int code, void *ctx);")
+            .expect("parsed");
+        assert_eq!(name, "callback_t");
+        assert_eq!(ty, "Option<unsafe extern \"C\" fn(c_int, *mut c_void)>");
+
+        let (n2, t2) = parse_typedef_fnptr("typedef int (*cmp_t)(const void *, const void *);")
+            .expect("parsed");
+        assert_eq!(n2, "cmp_t");
+        assert_eq!(
+            t2,
+            "Option<unsafe extern \"C\" fn(*const c_void, *const c_void) -> c_int>"
+        );
+    }
 
     #[test]
     fn array_parameters_decay_to_pointers() {
