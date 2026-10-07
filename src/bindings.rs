@@ -129,7 +129,19 @@ fn emit_bindings_from_parsed(
                     .iter()
                     .any(|e| format!("enum {}", e.name) == typedef.target);
             if !is_struct_alias && !is_enum_alias {
-                if let Some(generated) = generate_typedef(typedef, warnings) {
+                let target = typedef.target.trim();
+                let opaque_tag = target
+                    .strip_prefix("struct ")
+                    .or_else(|| target.strip_prefix("union "));
+                if opaque_tag.is_some() {
+                    // A typedef to a struct/union tag with no definition in this header is an
+                    // opaque handle (e.g. `typedef struct Foo foo;`). Emit a standard opaque FFI
+                    // type so the pointers that reference it resolve, instead of dropping it.
+                    if let Some(generated) = generate_opaque_typedef(&typedef.name, warnings) {
+                        code.push_str(&generated);
+                        code.push('\n');
+                    }
+                } else if let Some(generated) = generate_typedef(typedef, warnings) {
                     code.push_str(&generated);
                     code.push('\n');
                 }
@@ -152,6 +164,22 @@ fn emit_bindings_from_parsed(
     code.push_str("}\n");
 }
 
+// C type/function names are rarely idiomatic Rust; generated items carry this so the bindings are
+// clean under a consumer's default lints and `-D warnings`.
+const TYPE_ALLOW: &str = "#[allow(non_camel_case_types, non_snake_case, dead_code)]\n";
+
+fn generate_opaque_typedef(name: &str, warnings: &mut Vec<String>) -> Option<String> {
+    let Some(ident) = rust_ident(name) else {
+        warnings.push(format!("Skipped opaque typedef with invalid name: {name}"));
+        return None;
+    };
+    // Zero-sized, private field: references through pointers resolve, and the type cannot be
+    // constructed or dereferenced by consumers — the usual Rust representation of an opaque C type.
+    Some(format!(
+        "{TYPE_ALLOW}#[repr(C)]\npub struct {ident} {{\n    _private: [u8; 0],\n}}\n"
+    ))
+}
+
 fn generate_typedef(typedef: &TypedefDef, warnings: &mut Vec<String>) -> Option<String> {
     let Some(name) = rust_ident(&typedef.name) else {
         warnings.push(format!(
@@ -161,7 +189,7 @@ fn generate_typedef(typedef: &TypedefDef, warnings: &mut Vec<String>) -> Option<
         return None;
     };
     match c_type_to_rust_checked(&typedef.target) {
-        Ok(rust_type) => Some(format!("pub type {name} = {rust_type};\n")),
+        Ok(rust_type) => Some(format!("{TYPE_ALLOW}pub type {name} = {rust_type};\n")),
         Err(reason) => {
             warnings.push(format!("Skipped typedef {name}: {reason}"));
             None
@@ -175,6 +203,7 @@ fn generate_enum(enum_def: &EnumDef, warnings: &mut Vec<String>) -> Option<Strin
         return None;
     };
     let mut code = String::new();
+    code.push_str(TYPE_ALLOW);
     code.push_str("#[repr(C)]\n");
     code.push_str("#[derive(Debug, Copy, Clone, PartialEq, Eq)]\n");
     code.push_str(&format!("pub enum {name} {{\n"));
@@ -227,6 +256,7 @@ fn generate_struct(
     if options.derive_default {
         derives.push("Default");
     }
+    code.push_str(TYPE_ALLOW);
     code.push_str(&format!("#[derive({})]\n", derives.join(", ")));
     code.push_str("#[repr(C)]\n");
     code.push_str(&format!("pub struct {name} {{\n"));
@@ -465,6 +495,31 @@ mod tests {
         let binding = generate_bindings(&header, &opts).unwrap();
         assert!(binding.code.contains("pub type handle_t = c_int;"));
         assert!(binding.code.contains("pub fn open()"));
+    }
+
+    #[test]
+    fn test_generate_bindings_opaque_struct_typedef() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("opaque.h");
+        std::fs::write(
+            &header,
+            "typedef struct Thing thing;\nthing *thing_new(void);\nvoid thing_free(thing *t);\n",
+        )
+        .unwrap();
+
+        let opts = BindingOptions::default();
+        let binding = generate_bindings(&header, &opts).unwrap();
+        // The opaque handle must be defined, not referenced-but-undefined.
+        assert!(binding.code.contains("pub struct thing {"));
+        assert!(binding.code.contains("_private: [u8; 0]"));
+        // And it must be warning-clean under a consumer's default lints / -D warnings.
+        assert!(binding
+            .code
+            .contains("#[allow(non_camel_case_types, non_snake_case, dead_code)]\n#[repr(C)]\npub struct thing"));
+        assert!(binding.code.contains("pub fn thing_new() -> *mut thing"));
+        assert!(binding.code.contains("pub fn thing_free(t: *mut thing)"));
+        // And it must not leak the C `struct Thing` spelling as a Rust type alias.
+        assert!(!binding.code.contains("= struct"));
     }
 
     #[test]
