@@ -57,6 +57,17 @@ pub fn generate_bindings_from_content(
     options: &BindingOptions,
 ) -> Result<GeneratedBinding, String> {
     let parsed = parse_c_header(content);
+    Ok(generate_bindings_from_parsed(header, &parsed, options))
+}
+
+/// Generate Rust bindings from an already-parsed header. This is the single source of complete
+/// Rust output (types + extern block); the Rust consumer-imports path reuses it so the two do not
+/// diverge.
+pub fn generate_bindings_from_parsed(
+    header: &Path,
+    parsed: &ParsedHeader,
+    options: &BindingOptions,
+) -> GeneratedBinding {
     let mut warnings = Vec::new();
     let mut code = String::new();
 
@@ -70,13 +81,13 @@ pub fn generate_bindings_from_content(
     code.push_str("use std::os::raw::*;\n");
     code.push('\n');
 
-    emit_bindings_from_parsed(&parsed, options, &mut code, &mut warnings);
+    emit_bindings_from_parsed(parsed, options, &mut code, &mut warnings);
 
-    Ok(GeneratedBinding {
+    GeneratedBinding {
         code,
         source_header: header.to_path_buf(),
         warnings,
-    })
+    }
 }
 
 fn should_include(name: &str, allowlist: &[String]) -> bool {

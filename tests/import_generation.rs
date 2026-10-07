@@ -197,3 +197,35 @@ const char *label(void);
     assert_contains(&rust, "pub fn crc32fast_hash");
     assert!(rust.code.contains("u32"), "{}", rust.code);
 }
+
+#[test]
+fn rust_consumer_emits_declared_types_and_keeps_all_functions() {
+    // Previously the Rust consumer path dropped every function that referenced a header-declared
+    // type (enum / opaque handle), emitting only scalar-signature functions. The Rust consumer now
+    // routes through the full bindings generator, so the types are defined and no function is lost.
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("handle.h");
+    std::fs::write(
+        &header,
+        "typedef enum { S_OK = 0, S_ERR = 1 } status;\n\
+         typedef struct Obj obj;\n\
+         obj *obj_new(void);\n\
+         void obj_free(obj *o);\n\
+         status obj_do(obj *o, int n);\n",
+    )
+    .unwrap();
+
+    let rust = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap();
+    assert_contains(&rust, "pub enum status");
+    assert_contains(&rust, "pub struct obj");
+    assert_contains(&rust, "pub fn obj_new() -> *mut obj;");
+    assert_contains(&rust, "pub fn obj_free(o: *mut obj)");
+    assert_contains(&rust, "pub fn obj_do(o: *mut obj, n: c_int) -> status;");
+    assert!(
+        rust.warnings
+            .iter()
+            .all(|w| !w.contains("not supported for generated imports")),
+        "no function should be dropped for the Rust consumer: {:?}",
+        rust.warnings
+    );
+}

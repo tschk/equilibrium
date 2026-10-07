@@ -110,6 +110,27 @@ pub fn generate_imports_from_parsed(
         return generate_scriptc_imports(header, parsed, options);
     }
 
+    if language == Language::Rust {
+        // Rust consumer bindings ARE the full FFI bindings: types (enums, opaque handles, structs)
+        // plus the extern block. Reuse the one binding generator so no function is dropped for
+        // referencing a header-declared type and the output is self-contained and compiles.
+        let binding = crate::bindings::generate_bindings_from_parsed(
+            header,
+            parsed,
+            &crate::bindings::BindingOptions {
+                allowlist_functions: options.allowlist_functions.clone(),
+                ..Default::default()
+            },
+        );
+        return Ok(GeneratedImport {
+            code: binding.code,
+            language,
+            source_header: header.to_path_buf(),
+            warnings: binding.warnings,
+            companions: Vec::new(),
+        });
+    }
+
     let mut functions = Vec::new();
     let mut warnings = Vec::new();
 
@@ -158,7 +179,7 @@ fn render_imports(
     functions: &[FunctionDef],
 ) -> Result<String, String> {
     match language {
-        Language::Rust => Ok(render_rust(functions)),
+        Language::Rust => unreachable!("Rust imports are generated via the bindings path"),
         Language::Zig => Ok(render_zig(header, functions)),
         Language::C => Ok(render_c(header, functions)),
         Language::Cpp => Ok(render_cpp(header, functions)),
@@ -474,25 +495,6 @@ fn is_size_type(c_type: &str) -> bool {
     normalize_c_type(c_type) == "size_t"
 }
 
-fn render_rust(functions: &[FunctionDef]) -> String {
-    let mut code = String::from("use std::os::raw::*;\n\nextern \"C\" {\n");
-    for function in functions {
-        code.push_str("    pub fn ");
-        code.push_str(&function.name);
-        code.push('(');
-        code.push_str(&render_rust_params(function));
-        code.push(')');
-        let return_type = rust_return_type(&function.return_type);
-        if return_type != "()" {
-            code.push_str(" -> ");
-            code.push_str(&return_type);
-        }
-        code.push_str(";\n");
-    }
-    code.push_str("}\n");
-    code
-}
-
 fn render_zig(header: &Path, functions: &[FunctionDef]) -> String {
     let mut code = format!(
         "const c = @cImport({{\n    @cInclude(\"{}\");\n}});\n\n",
@@ -689,15 +691,6 @@ fn render_v(header: &Path, functions: &[FunctionDef]) -> String {
     code
 }
 
-fn render_rust_params(function: &FunctionDef) -> String {
-    function
-        .params
-        .iter()
-        .map(|(param_type, name)| format!("{name}: {}", rust_return_type(param_type)))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn render_c_params(function: &FunctionDef) -> String {
     function
         .params
@@ -768,10 +761,6 @@ fn render_v_params(function: &FunctionDef) -> String {
         .map(|(param_type, name)| format!("{name} {}", v_type(param_type)))
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-fn rust_return_type(c_type: &str) -> String {
-    crate::c_header::c_type_to_rust(c_type)
 }
 
 fn csharp_type(c_type: &str) -> &'static str {
