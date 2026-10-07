@@ -144,7 +144,11 @@ pub fn generate_imports_from_parsed(
         {
             continue;
         }
-        if supports_import(&function) {
+        // Languages that bind by including the C header (or aliasing the @cImport symbol) let the
+        // C toolchain resolve every type, so the scalar-only `supports_import` gate would only
+        // drop functions it has no reason to. Gate only the languages that re-map signatures
+        // without the header's own types.
+        if binds_against_c_header(language) || supports_import(&function) {
             functions.push(function);
         } else {
             warnings.push(format!(
@@ -162,6 +166,14 @@ pub fn generate_imports_from_parsed(
         warnings,
         companions: Vec::new(),
     })
+}
+
+/// True for consumer languages whose generated bindings include the original C header (or alias the
+/// `@cImport` symbols), so the C compiler resolves every declared type and no function need be
+/// dropped for using one. Languages that instead re-map signatures into their own type system are
+/// not listed here, because an un-emitted declared type would dangle.
+fn binds_against_c_header(language: Language) -> bool {
+    matches!(language, Language::Zig | Language::C | Language::Cpp)
 }
 
 fn supports_import(function: &FunctionDef) -> bool {

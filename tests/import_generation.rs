@@ -56,8 +56,11 @@ fn generates_imports_for_all_detected_languages() {
 
 #[test]
 fn import_generation_skips_unsupported_return_types_with_warnings() {
+    // A by-value struct return cannot be remapped into a mapping-based consumer (Nim here), so it
+    // is skipped with a warning. (Header-including consumers like Zig/C bind it fine via the
+    // header and are covered by header_including_consumers_keep_functions_using_declared_types.)
     let (_dir, header) = write_header();
-    let generated = generate_imports(&header, Language::Zig, &ImportOptions::default()).unwrap();
+    let generated = generate_imports(&header, Language::Nim, &ImportOptions::default()).unwrap();
 
     assert!(!generated.code.contains("unsupported_pair"));
     assert!(generated
@@ -228,4 +231,39 @@ fn rust_consumer_emits_declared_types_and_keeps_all_functions() {
         "no function should be dropped for the Rust consumer: {:?}",
         rust.warnings
     );
+}
+
+#[test]
+fn header_including_consumers_keep_functions_using_declared_types() {
+    // Zig/C/C++ bind by including the header, so functions using a declared enum/opaque type must
+    // not be dropped by the scalar-only gate.
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("handle.h");
+    std::fs::write(
+        &header,
+        "typedef enum { S_OK = 0 } status;\n\
+         typedef struct Obj obj;\n\
+         obj *obj_new(void);\n\
+         status obj_do(obj *o, int n);\n",
+    )
+    .unwrap();
+
+    let zig = generate_imports(&header, Language::Zig, &ImportOptions::default()).unwrap();
+    assert_contains(&zig, "pub const obj_new = c.obj_new;");
+    assert_contains(&zig, "pub const obj_do = c.obj_do;");
+
+    let c = generate_imports(&header, Language::C, &ImportOptions::default()).unwrap();
+    assert_contains(&c, "obj_new(");
+    assert_contains(&c, "obj_do(");
+
+    for generated in [&zig, &c] {
+        assert!(
+            generated
+                .warnings
+                .iter()
+                .all(|w| !w.contains("not supported for generated imports")),
+            "header-including consumer dropped a function: {:?}",
+            generated.warnings
+        );
+    }
 }
