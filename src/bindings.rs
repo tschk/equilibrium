@@ -109,6 +109,19 @@ fn emit_bindings_from_parsed(
     code: &mut String,
     warnings: &mut Vec<String>,
 ) {
+    for def in &parsed.defines {
+        if should_include(&def.name, &options.allowlist_types) {
+            if let Some(ident) = rust_ident(&def.name) {
+                code.push_str(&format!(
+                    "#[allow(non_upper_case_globals, dead_code)]\npub const {ident}: {} = {};\n\n",
+                    def.rust_type, def.value
+                ));
+            } else {
+                warnings.push(format!("Skipped #define with invalid name: {}", def.name));
+            }
+        }
+    }
+
     for enum_def in &parsed.enums {
         if should_include(&enum_def.name, &options.allowlist_types) {
             if let Some(generated) = generate_enum(enum_def, warnings) {

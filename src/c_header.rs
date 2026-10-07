@@ -7,6 +7,15 @@ pub(crate) struct ParsedHeader {
     pub(crate) unions: Vec<StructDef>,
     pub(crate) enums: Vec<EnumDef>,
     pub(crate) functions: Vec<FunctionDef>,
+    pub(crate) defines: Vec<DefineConst>,
+}
+
+/// An object-like `#define` whose body is an integer literal, emitted as a `pub const`.
+#[derive(Clone, Debug)]
+pub(crate) struct DefineConst {
+    pub(crate) name: String,
+    pub(crate) rust_type: &'static str,
+    pub(crate) value: String,
 }
 
 #[derive(Clone, Debug)]
@@ -92,6 +101,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     let mut unions = Vec::new();
     let mut enums = Vec::new();
     let mut functions = Vec::new();
+    let mut defines = Vec::new();
 
     let mut i = 0;
     let stripped = strip_c_comments(content);
@@ -99,6 +109,12 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
 
     while i < lines.len() {
         let line = lines[i];
+
+        if line.starts_with("#define") {
+            if let Some(def) = parse_define(line) {
+                defines.push(def);
+            }
+        }
 
         if line.starts_with("typedef") {
             if line.contains("enum") && line.contains('{') {
@@ -212,6 +228,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
         unions,
         enums,
         functions,
+        defines,
     }
 }
 
@@ -360,6 +377,95 @@ pub(crate) fn parse_typedef_fnptr(line: &str) -> Option<(String, String)> {
     }
     sig.push('>');
     Some((name.to_string(), sig))
+}
+
+/// Parse an object-like `#define NAME <int-literal>` into a typed Rust constant. Returns None for
+/// function-like macros (`NAME(x)`), and for non-integer bodies (strings, floats, expressions) —
+/// those have no unambiguous Rust constant form.
+pub(crate) fn parse_define(line: &str) -> Option<DefineConst> {
+    let rest = line.strip_prefix("#define")?.trim();
+    let name_len = rest
+        .char_indices()
+        .take_while(|(_, c)| c.is_ascii_alphanumeric() || *c == '_')
+        .map(|(k, c)| k + c.len_utf8())
+        .last()
+        .unwrap_or(0);
+    if name_len == 0 {
+        return None;
+    }
+    let name = &rest[..name_len];
+    if !is_c_identifier(name) {
+        return None;
+    }
+    let body = &rest[name_len..];
+    // A `(` immediately after the name (no space) is a function-like macro.
+    if body.starts_with('(') {
+        return None;
+    }
+    let (rust_type, value) = parse_int_literal(body.trim())?;
+    Some(DefineConst {
+        name: name.to_string(),
+        rust_type,
+        value,
+    })
+}
+
+/// Parse a C integer literal (optional sign, decimal or `0x` hex, optional u/l suffixes) into a
+/// Rust type and value string. Rejects anything that is not purely an integer literal.
+fn parse_int_literal(s: &str) -> Option<(&'static str, String)> {
+    let s = s.trim();
+    let (neg, rest) = match s.strip_prefix('-') {
+        Some(r) => (true, r.trim_start()),
+        None => (false, s),
+    };
+    let (radix, start) = if rest.starts_with("0x") || rest.starts_with("0X") {
+        (16u32, 2usize)
+    } else {
+        (10u32, 0usize)
+    };
+    let mut end = start;
+    for (k, c) in rest.char_indices().skip(start) {
+        let ok = if radix == 16 {
+            c.is_ascii_hexdigit()
+        } else {
+            c.is_ascii_digit()
+        };
+        if ok {
+            end = k + c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == start {
+        return None; // no digits
+    }
+    let suffix = &rest[end..];
+    if !suffix.chars().all(|c| matches!(c, 'u' | 'U' | 'l' | 'L')) {
+        return None; // trailing operators/garbage -> not a plain literal
+    }
+    let magnitude = u128::from_str_radix(&rest[start..end], radix).ok()?;
+    let unsigned = suffix.chars().any(|c| c == 'u' || c == 'U');
+    let rust_type = if neg {
+        if magnitude <= i32::MAX as u128 + 1 {
+            "i32"
+        } else {
+            "i64"
+        }
+    } else if unsigned || magnitude > i32::MAX as u128 {
+        if magnitude <= u32::MAX as u128 {
+            "u32"
+        } else {
+            "u64"
+        }
+    } else {
+        "u32"
+    };
+    let mut value = String::new();
+    if neg {
+        value.push('-');
+    }
+    value.push_str(&rest[..end]); // keeps any 0x prefix, drops the C suffix
+    Some((rust_type, value))
 }
 
 pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
@@ -751,6 +857,24 @@ mod type_mapping_tests {
         assert_eq!(c_type_to_rust("uint8_t[256]"), "[u8; 256]");
         assert_eq!(c_type_to_rust("int[4][4]"), "[[c_int; 4]; 4]");
         assert_eq!(c_type_to_rust("char[]"), "[c_char; 0]");
+    }
+
+    #[test]
+    fn integer_defines_become_typed_consts_others_skipped() {
+        use super::parse_define;
+        let ok = |src: &str| parse_define(src).map(|d| (d.rust_type, d.value));
+        assert_eq!(ok("#define MAX_ITEMS 16"), Some(("u32", "16".to_string())));
+        assert_eq!(ok("#define FLAGS 0xFF"), Some(("u32", "0xFF".to_string())));
+        assert_eq!(ok("#define NEG -1"), Some(("i32", "-1".to_string())));
+        assert_eq!(
+            ok("#define BIG 5000000000"),
+            Some(("u64", "5000000000".to_string()))
+        );
+        // Non-integer / function-like macros are not constants.
+        assert_eq!(ok("#define GREETING \"hi\""), None);
+        assert_eq!(ok("#define PI 3.14"), None);
+        assert_eq!(ok("#define SQUARE(x) ((x)*(x))"), None);
+        assert_eq!(ok("#define SHIFT (1 << 3)"), None);
     }
 
     #[test]
