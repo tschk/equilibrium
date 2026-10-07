@@ -193,6 +193,23 @@ pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
     Some(StructDef { name, fields })
 }
 
+/// Decay a C array parameter type to the pointer C passes: the outermost dimension becomes `*`,
+/// any inner dimensions stay (`int[4][4]` -> `int[4] *`). Non-array types are returned unchanged.
+pub(crate) fn decay_param_type(type_str: &str) -> String {
+    match split_array_dims(type_str) {
+        Some((base, dims)) if !dims.is_empty() => {
+            let mut pointee = base;
+            for dim in &dims[1..] {
+                pointee.push('[');
+                pointee.push_str(dim);
+                pointee.push(']');
+            }
+            format!("{pointee} *")
+        }
+        _ => type_str.to_string(),
+    }
+}
+
 /// Split a C field/declarator into (type, name), moving pointer stars into the type and folding
 /// trailing array dimensions into the type (`uint8_t bytes[256]` -> ("uint8_t[256]", "bytes"),
 /// `const char *name` -> ("const char *", "name")). Returns None for declarators whose name is not
@@ -297,19 +314,11 @@ pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
         params_str
             .split(',')
             .filter_map(|p| {
-                let p = p.trim();
-                let parts: Vec<&str> = p.rsplitn(2, ' ').collect();
-                if parts.len() == 2 {
-                    let (mut typ, mut name) = (parts[1].to_string(), parts[0].to_string());
-                    if name.starts_with('*') {
-                        let stars: String = name.chars().take_while(|&c| c == '*').collect();
-                        name = name[stars.len()..].to_string();
-                        typ = format!("{} {}", typ, stars);
-                    }
-                    Some((typ, name))
-                } else {
-                    None
-                }
+                let (typ, name) = parse_c_field(p)?;
+                // A C array parameter decays to a pointer to its element type, so the outermost
+                // dimension becomes `*` (`const int values[]` -> `const int *`, `int m[4][4]` ->
+                // pointer to `int[4]`). Non-array params pass through unchanged.
+                Some((decay_param_type(&typ), name))
             })
             .collect()
     };
@@ -608,6 +617,23 @@ pub(crate) fn header_stem(path: &Path) -> String {
 #[cfg(test)]
 mod type_mapping_tests {
     use super::c_type_to_rust;
+
+    #[test]
+    fn array_parameters_decay_to_pointers() {
+        use super::parse_function_line;
+        let f = parse_function_line("unsigned int sum_array(const int values[], size_t n);")
+            .expect("parsed");
+        assert_eq!(f.name, "sum_array");
+        assert_eq!(
+            f.params[0],
+            ("const int *".to_string(), "values".to_string())
+        );
+        assert_eq!(f.params[1], ("size_t".to_string(), "n".to_string()));
+
+        let m = parse_function_line("int matrix_trace(int m[4][4]);").expect("parsed");
+        assert_eq!(m.params[0].1, "m");
+        assert_eq!(super::c_type_to_rust(&m.params[0].0), "*mut [c_int; 4]");
+    }
 
     #[test]
     fn arrays_map_to_rust_arrays() {
