@@ -1,7 +1,9 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::c_header::{
-    header_stem, is_c_abi_safe_type, is_c_identifier, parse_c_header, FunctionDef, ParsedHeader,
+    header_stem, is_c_abi_safe_type, is_c_identifier, parse_c_header, parse_enum_discriminant,
+    split_array_dims, FunctionDef, ParsedHeader,
 };
 use crate::detector::Language;
 use crate::limits::read_header_content;
@@ -131,8 +133,25 @@ pub fn generate_imports_from_parsed(
         });
     }
 
+    let declared_types = declared_import_types(parsed, language);
     let mut functions = Vec::new();
     let mut warnings = Vec::new();
+
+    if maps_declared_types(language) {
+        let names = parsed
+            .structs
+            .iter()
+            .chain(parsed.unions.iter())
+            .map(|definition| &definition.name)
+            .chain(parsed.enums.iter().map(|enumeration| &enumeration.name))
+            .chain(parsed.typedefs.iter().map(|alias| &alias.name))
+            .collect::<HashSet<_>>();
+        for name in names {
+            if !declared_types.contains(name) {
+                warnings.push(format!("Skipped type {name} because its declaration is not supported for generated imports"));
+            }
+        }
+    }
 
     for function in &parsed.functions {
         let function = function.clone();
@@ -147,8 +166,9 @@ pub fn generate_imports_from_parsed(
         // Languages that bind by including the C header (or aliasing the @cImport symbol) let the
         // C toolchain resolve every type, so the scalar-only `supports_import` gate would only
         // drop functions it has no reason to. Gate only the languages that re-map signatures
-        // without the header's own types.
-        if binds_against_c_header(language) || supports_import(&function) {
+        // with the declarations emitted below.
+        if binds_against_c_header(language) || supports_import(&function, language, &declared_types)
+        {
             functions.push(function);
         } else {
             warnings.push(format!(
@@ -158,7 +178,7 @@ pub fn generate_imports_from_parsed(
         }
     }
 
-    let code = render_imports(language, header, &functions)?;
+    let code = render_imports(language, header, &functions, parsed)?;
     Ok(GeneratedImport {
         code,
         language,
@@ -176,31 +196,260 @@ fn binds_against_c_header(language: Language) -> bool {
     matches!(language, Language::Zig | Language::C | Language::Cpp)
 }
 
-fn supports_import(function: &FunctionDef) -> bool {
+fn maps_declared_types(language: Language) -> bool {
+    matches!(
+        language,
+        Language::Nim | Language::CSharp | Language::D | Language::Odin | Language::V
+    )
+}
+
+fn unqualified_type(c_type: &str) -> String {
+    c_type
+        .replace('*', " * ")
+        .split_whitespace()
+        .filter(|word| {
+            !matches!(
+                *word,
+                "const" | "volatile" | "restrict" | "__restrict" | "__restrict__"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn supports_declared_type(c_type: &str, declared: &HashSet<String>) -> bool {
+    let normalized = unqualified_type(c_type);
+    if is_c_abi_safe_type(&normalized) {
+        return true;
+    }
+    if let Some(inner) = normalized.strip_suffix('*') {
+        return supports_declared_type(inner.trim(), declared);
+    }
+    if let Some((base, dims)) = split_array_dims(&normalized) {
+        return dims.iter().all(|dim| dim.parse::<usize>().is_ok())
+            && supports_declared_type(&base, declared);
+    }
+    declared.contains(&normalized)
+}
+
+/// C# fixed buffers accept primitive elements only. Reject other arrays instead of
+/// emitting uncompilable fixed aggregate/pointer buffers or changing an inline array's ABI.
+fn supports_mapping_field(language: Language, ty: &str, parsed: &ParsedHeader) -> bool {
+    if language != Language::CSharp {
+        return true;
+    }
+    let resolved = resolve_consumer_alias(ty, parsed, 0);
+    let Some((base, _)) = split_array_dims(&resolved) else {
+        return true;
+    };
+    matches!(
+        mapped_type(language, &base).as_str(),
+        "bool"
+            | "byte"
+            | "sbyte"
+            | "short"
+            | "ushort"
+            | "int"
+            | "uint"
+            | "long"
+            | "ulong"
+            | "char"
+            | "float"
+            | "double"
+    )
+}
+
+/// Only actual definitions and resolvable aliases are accepted. An unknown typedef or a
+/// function-pointer alias cannot acquire an invented pointer mapping and slip through the gate.
+fn declared_import_types(parsed: &ParsedHeader, language: Language) -> HashSet<String> {
+    let mut declared = HashSet::new();
+    for (kind, names) in [
+        (
+            "struct",
+            parsed.structs.iter().map(|s| &s.name).collect::<Vec<_>>(),
+        ),
+        ("union", parsed.unions.iter().map(|s| &s.name).collect()),
+        ("enum", parsed.enums.iter().map(|s| &s.name).collect()),
+    ] {
+        for name in names {
+            if is_c_identifier(name) {
+                declared.insert(name.clone());
+                declared.insert(format!("{kind} {name}"));
+            }
+        }
+    }
+    for alias in &parsed.typedefs {
+        if alias.rust_override.is_none() && is_c_identifier(&alias.name) {
+            for kind in ["struct ", "union "] {
+                if let Some(tag) = alias.target.strip_prefix(kind) {
+                    if is_c_identifier(tag) {
+                        declared.insert(alias.target.clone());
+                        declared.insert(tag.to_string());
+                    }
+                }
+            }
+        }
+    }
+    loop {
+        let before = declared.len();
+        for alias in &parsed.typedefs {
+            if alias.rust_override.is_none()
+                && is_c_identifier(&alias.name)
+                && supports_declared_type(&alias.target, &declared)
+            {
+                declared.insert(alias.name.clone());
+            }
+        }
+        if before == declared.len() {
+            break;
+        }
+    }
+    // Prune unsupported definitions and every alias depending on them. Definitions must be
+    // renderable too: merely recognizing a name cannot justify a dangling field type.
+    loop {
+        let before = declared.len();
+        for (kind, definitions) in [("struct", &parsed.structs), ("union", &parsed.unions)] {
+            for definition in definitions {
+                if !definition.bitfields.is_empty()
+                    || (language == Language::V && definition.name.contains("__anon_"))
+                    || !definition.fields.iter().all(|(ty, name)| {
+                        is_c_identifier(name)
+                            && supports_declared_type(ty, &declared)
+                            && supports_mapping_field(language, ty, parsed)
+                    })
+                {
+                    declared.remove(&definition.name);
+                    declared.remove(&format!("{kind} {}", definition.name));
+                }
+            }
+        }
+        for enumeration in &parsed.enums {
+            if (language == Language::V && enumeration.name.contains("__anon_"))
+                || !enumeration.variants.iter().all(|(name, value)| {
+                    is_c_identifier(name)
+                        && value
+                            .as_ref()
+                            .is_none_or(|value| parse_enum_discriminant(value).is_some())
+                })
+            {
+                declared.remove(&enumeration.name);
+                declared.remove(&format!("enum {}", enumeration.name));
+            }
+        }
+        for alias in &parsed.typedefs {
+            if !supports_declared_type(&alias.target, &declared) {
+                declared.remove(&alias.name);
+            }
+        }
+        if before == declared.len() {
+            break;
+        }
+    }
+    declared
+}
+
+fn supports_import(function: &FunctionDef, language: Language, declared: &HashSet<String>) -> bool {
+    let supports = |ty: &str| {
+        if maps_declared_types(language) {
+            supports_declared_type(ty, declared)
+        } else {
+            is_c_abi_safe_type(ty)
+        }
+    };
     is_c_identifier(&function.name)
-        && is_c_abi_safe_type(&function.return_type)
+        && supports(&function.return_type)
         && function
             .params
             .iter()
-            .all(|(param_type, name)| is_c_identifier(name) && is_c_abi_safe_type(param_type))
+            .all(|(ty, name)| is_c_identifier(name) && supports(ty))
+}
+
+/// C# cannot export aliases, and V's C declarations use the header's tag names.
+/// Expand aliases in those signatures/fields instead of leaving unresolved target types.
+fn resolve_consumer_alias(c_type: &str, parsed: &ParsedHeader, depth: usize) -> String {
+    if depth > parsed.typedefs.len() {
+        return c_type.to_string();
+    }
+    let normalized = unqualified_type(c_type);
+    if let Some((base, dims)) = split_array_dims(&normalized) {
+        let mut resolved = resolve_consumer_alias(&base, parsed, depth + 1);
+        for dim in dims {
+            resolved.push_str(&format!("[{dim}]"));
+        }
+        return resolved;
+    }
+    if let Some(inner) = normalized.strip_suffix('*') {
+        return format!(
+            "{} *",
+            resolve_consumer_alias(inner.trim(), parsed, depth + 1)
+        );
+    }
+    if let Some(alias) = parsed
+        .typedefs
+        .iter()
+        .find(|alias| alias.name == normalized)
+    {
+        return resolve_consumer_alias(&alias.target, parsed, depth + 1);
+    }
+    normalized
+}
+
+fn expand_consumer_aliases(parsed: &ParsedHeader) -> ParsedHeader {
+    let mut expanded = parsed.clone();
+    for function in &mut expanded.functions {
+        function.return_type = resolve_consumer_alias(&function.return_type, parsed, 0);
+        for (ty, _) in &mut function.params {
+            *ty = resolve_consumer_alias(ty, parsed, 0);
+        }
+    }
+    for definition in expanded
+        .structs
+        .iter_mut()
+        .chain(expanded.unions.iter_mut())
+    {
+        for (ty, _) in &mut definition.fields {
+            *ty = resolve_consumer_alias(ty, parsed, 0);
+        }
+    }
+    expanded
 }
 
 fn render_imports(
     language: Language,
     header: &Path,
     functions: &[FunctionDef],
+    parsed: &ParsedHeader,
 ) -> Result<String, String> {
+    let expanded;
+    let expanded_functions;
+    let (parsed, functions) = if matches!(language, Language::CSharp | Language::V) {
+        expanded = expand_consumer_aliases(parsed);
+        expanded_functions = functions
+            .iter()
+            .map(|function| {
+                let mut function = function.clone();
+                function.return_type = resolve_consumer_alias(&function.return_type, parsed, 0);
+                for (ty, _) in &mut function.params {
+                    *ty = resolve_consumer_alias(ty, parsed, 0);
+                }
+                function
+            })
+            .collect::<Vec<_>>();
+        (&expanded, expanded_functions.as_slice())
+    } else {
+        (parsed, functions)
+    };
     match language {
         Language::Rust => unreachable!("Rust imports are generated via the bindings path"),
         Language::Zig => Ok(render_zig(header, functions)),
         Language::C => Ok(render_c(header, functions)),
         Language::Cpp => Ok(render_cpp(header, functions)),
-        Language::CSharp => Ok(render_csharp(header, functions)),
-        Language::D => Ok(render_d(functions)),
-        Language::Nim => Ok(render_nim(functions)),
-        Language::Odin => Ok(render_odin(header, functions)),
+        Language::CSharp => Ok(render_csharp(header, functions, parsed)),
+        Language::D => Ok(render_d(functions, parsed)),
+        Language::Nim => Ok(render_nim(functions, parsed)),
+        Language::Odin => Ok(render_odin(header, functions, parsed)),
         Language::Hare => Ok(render_hare(functions)),
-        Language::V => Ok(render_v(header, functions)),
+        Language::V => Ok(render_v(header, functions, parsed)),
         Language::ScriptC => {
             Err("scriptc bindings are generated with their --ffi manifest".to_string())
         }
@@ -586,16 +835,17 @@ fn render_cpp(header: &Path, functions: &[FunctionDef]) -> String {
     code
 }
 
-fn render_csharp(header: &Path, functions: &[FunctionDef]) -> String {
+fn render_csharp(header: &Path, functions: &[FunctionDef], parsed: &ParsedHeader) -> String {
     let library_name = header_stem(header);
     let mut code = String::from(
-        "using System;\nusing System.Runtime.InteropServices;\n\npublic static class EquilibriumImports\n{\n",
+        "using System;\nusing System.Runtime.InteropServices;\n\npublic static unsafe class EquilibriumImports\n{\n",
     );
+    code.push_str(&render_declared_types(Language::CSharp, parsed));
     for function in functions {
         code.push_str("    [DllImport(\"");
         code.push_str(&library_name);
         code.push_str("\")]\n    public static extern ");
-        code.push_str(csharp_type(&function.return_type));
+        code.push_str(&csharp_type(&function.return_type));
         code.push(' ');
         code.push_str(&function.name);
         code.push('(');
@@ -606,11 +856,12 @@ fn render_csharp(header: &Path, functions: &[FunctionDef]) -> String {
     code
 }
 
-fn render_d(functions: &[FunctionDef]) -> String {
-    let mut code = String::from("extern(C) {\n");
+fn render_d(functions: &[FunctionDef], parsed: &ParsedHeader) -> String {
+    let mut code = String::from("import core.stdc.stddef : size_t, ptrdiff_t;\nextern(C) {\n");
+    code.push_str(&render_declared_types(Language::D, parsed));
     for function in functions {
         code.push_str("    ");
-        code.push_str(d_type(&function.return_type));
+        code.push_str(&d_type(&function.return_type));
         code.push(' ');
         code.push_str(&function.name);
         code.push('(');
@@ -621,15 +872,16 @@ fn render_d(functions: &[FunctionDef]) -> String {
     code
 }
 
-fn render_nim(functions: &[FunctionDef]) -> String {
+fn render_nim(functions: &[FunctionDef], parsed: &ParsedHeader) -> String {
     let mut code = String::new();
+    code.push_str(&render_declared_types(Language::Nim, parsed));
     for function in functions {
         code.push_str("proc ");
         code.push_str(&function.name);
         code.push('(');
         code.push_str(&render_nim_params(function));
         code.push_str("): ");
-        code.push_str(nim_type(&function.return_type));
+        code.push_str(&nim_type(&function.return_type));
         code.push_str(" {.importc: \"");
         code.push_str(&function.name);
         code.push_str("\", cdecl.}\n");
@@ -637,8 +889,13 @@ fn render_nim(functions: &[FunctionDef]) -> String {
     code
 }
 
-fn render_odin(header: &Path, functions: &[FunctionDef]) -> String {
-    let mut code = format!("foreign import eq \"{}\"\n\n", header_stem(header));
+fn render_odin(header: &Path, functions: &[FunctionDef], parsed: &ParsedHeader) -> String {
+    let mut code = format!(
+        "package bindings\nimport c \"core:c\"\nforeign import eq \"{}\"\n\n",
+        header_stem(header)
+    );
+    code.push_str(&render_declared_types(Language::Odin, parsed));
+    code.push_str("foreign eq {\n");
     for function in functions {
         code.push_str(&function.name);
         code.push_str(" :: proc(");
@@ -647,10 +904,11 @@ fn render_odin(header: &Path, functions: &[FunctionDef]) -> String {
         let return_type = odin_type(&function.return_type);
         if return_type != "void" {
             code.push_str(" -> ");
-            code.push_str(return_type);
+            code.push_str(&return_type);
         }
         code.push_str(" ---\n");
     }
+    code.push_str("}\n");
     code
 }
 
@@ -674,7 +932,7 @@ fn render_hare(functions: &[FunctionDef]) -> String {
     code
 }
 
-fn render_v(header: &Path, functions: &[FunctionDef]) -> String {
+fn render_v(header: &Path, functions: &[FunctionDef], parsed: &ParsedHeader) -> String {
     let include_dir = header
         .parent()
         .and_then(|parent| parent.to_str())
@@ -687,6 +945,7 @@ fn render_v(header: &Path, functions: &[FunctionDef]) -> String {
             .and_then(|name| name.to_str())
             .unwrap_or("equilibrium.h")
     );
+    code.push_str(&render_declared_types(Language::V, parsed));
     for function in functions {
         code.push_str("fn C.");
         code.push_str(&function.name);
@@ -696,7 +955,7 @@ fn render_v(header: &Path, functions: &[FunctionDef]) -> String {
         let return_type = v_type(&function.return_type);
         if return_type != "void" {
             code.push(' ');
-            code.push_str(return_type);
+            code.push_str(&return_type);
         }
         code.push('\n');
     }
@@ -775,44 +1034,332 @@ fn render_v_params(function: &FunctionDef) -> String {
         .join(", ")
 }
 
-fn csharp_type(c_type: &str) -> &'static str {
-    match c_type.trim() {
-        "void" => "void",
-        "int" => "int",
-        "const char *" | "char *" | "char*" | "const char*" => "IntPtr",
-        "int *" | "int*" => "IntPtr",
-        _ => "IntPtr",
+/// Map the same type syntax for fields, aliases and signatures; declared names must never
+/// silently fall back to a generic pointer (which changes by-value enum/aggregate ABIs).
+fn mapped_type(language: Language, c_type: &str) -> String {
+    let normalized = unqualified_type(c_type);
+    if let Some((base, dims)) = split_array_dims(&normalized) {
+        let mut ty = mapped_type(language, &base);
+        for dim in dims.iter().rev() {
+            ty = match language {
+                Language::Nim => format!("array[{dim}, {ty}]"),
+                Language::D => format!("{ty}[{dim}]"),
+                Language::Odin | Language::V => format!("[{dim}]{ty}"),
+                Language::CSharp => format!("{ty}[]"),
+                _ => unreachable!(),
+            };
+        }
+        return ty;
+    }
+    if let Some(inner) = normalized.strip_suffix('*') {
+        let inner = inner.trim();
+        let ty = mapped_type(language, inner);
+        return match language {
+            Language::CSharp => "IntPtr".into(),
+            Language::D if c_type.trim().starts_with("const ") => format!("const({ty})*"),
+            Language::D => format!("{ty}*"),
+            Language::Nim if inner == "void" => "pointer".into(),
+            Language::Nim if inner == "char" => "cstring".into(),
+            Language::Nim => format!("ptr {ty}"),
+            Language::Odin if inner == "void" => "rawptr".into(),
+            Language::Odin if inner == "char" => "cstring".into(),
+            Language::Odin => format!("^{ty}"),
+            Language::V if inner == "void" => "voidptr".into(),
+            Language::V => format!("&{ty}"),
+            _ => unreachable!(),
+        };
+    }
+    let name = normalized
+        .strip_prefix("struct ")
+        .or_else(|| normalized.strip_prefix("union "))
+        .or_else(|| normalized.strip_prefix("enum "))
+        .unwrap_or(&normalized);
+    // Each row has C#, D, Nim, Odin and V spellings, respectively. C long follows the
+    // target C ABI (64 bits on Unix, 32 bits on Windows), rather than the host language's long.
+    let long = if cfg!(windows) { "int" } else { "int64_t" };
+    if name == "long" || name == "long int" {
+        return mapped_type(language, long);
+    }
+    if name == "unsigned long" || name == "unsigned long int" {
+        return mapped_type(
+            language,
+            if cfg!(windows) {
+                "unsigned int"
+            } else {
+                "uint64_t"
+            },
+        );
+    }
+    let row = match name {
+        "void" => ["void", "void", "void", "void", "void"],
+        "char" => ["byte", "char", "cchar", "c.char", "char"],
+        "signed char" | "int8_t" => ["sbyte", "byte", "int8", "i8", "i8"],
+        "unsigned char" | "uchar" | "uint8_t" => ["byte", "ubyte", "uint8", "u8", "u8"],
+        "short" | "short int" | "int16_t" => ["short", "short", "cshort", "c.short", "i16"],
+        "unsigned short" | "ushort" | "uint16_t" => {
+            ["ushort", "ushort", "cushort", "c.ushort", "u16"]
+        }
+        "int" | "int32_t" => ["int", "int", "cint", "c.int", "int"],
+        "unsigned" | "unsigned int" | "uint" | "uint32_t" => {
+            ["uint", "uint", "cuint", "c.uint", "u32"]
+        }
+        "long long" | "int64_t" => ["long", "long", "clonglong", "i64", "i64"],
+        "unsigned long long" | "uint64_t" => ["ulong", "ulong", "culonglong", "u64", "u64"],
+        "size_t" => ["UIntPtr", "size_t", "csize_t", "uintptr", "usize"],
+        "ssize_t" => ["IntPtr", "ptrdiff_t", "int", "int", "isize"],
+        "float" => ["float", "float", "cfloat", "f32", "f32"],
+        "double" => ["double", "double", "cdouble", "f64", "f64"],
+        "bool" | "_Bool" => ["byte", "bool", "bool", "bool", "bool"],
+        _ => {
+            return if language == Language::V {
+                format!("C.{name}")
+            } else {
+                name.to_string()
+            }
+        }
+    };
+    row[match language {
+        Language::CSharp => 0,
+        Language::D => 1,
+        Language::Nim => 2,
+        Language::Odin => 3,
+        Language::V => 4,
+        _ => unreachable!(),
+    }]
+    .to_string()
+}
+
+fn render_declared_types(language: Language, parsed: &ParsedHeader) -> String {
+    let mut code = String::new();
+    let declared = declared_import_types(parsed, language);
+    let mut emitted = HashSet::new();
+    for enumeration in &parsed.enums {
+        if !declared.contains(&enumeration.name) {
+            continue;
+        }
+        let name = &enumeration.name;
+        emitted.insert(name.clone());
+        match language {
+            Language::CSharp => code.push_str(&format!("    public enum {name} : int {{\n")),
+            // Integer aliases allow C enums with negative, duplicate and out-of-order values.
+            Language::Nim => code.push_str(&format!("type {name}* = cint\n")),
+            Language::D => code.push_str(&format!("alias {name} = int;\n")),
+            Language::Odin => code.push_str(&format!("{name} :: c.int\n")),
+            Language::V => code.push_str(&format!("enum C.{name} {{\n")),
+            _ => unreachable!(),
+        }
+        let mut previous: Option<String> = None;
+        for (variant, explicit) in &enumeration.variants {
+            let value = explicit
+                .as_ref()
+                .and_then(|value| parse_enum_discriminant(value))
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| {
+                    previous
+                        .as_ref()
+                        .map(|prev| format!("{prev} + 1"))
+                        .unwrap_or_else(|| "0".into())
+                });
+            match language {
+                Language::CSharp => code.push_str(&format!("        {variant} = {value},\n")),
+                Language::Nim => code.push_str(&format!("const {variant}* = {name}({value})\n")),
+                Language::D => code.push_str(&format!("enum {name} {variant} = {value};\n")),
+                Language::Odin => code.push_str(&format!("{variant} :: {name}({value})\n")),
+                Language::V => code.push_str(&format!(
+                    "    {variant_lower} = {value}\n",
+                    variant_lower = variant.to_lowercase()
+                )),
+                _ => unreachable!(),
+            }
+            previous = Some(if language == Language::V {
+                variant.to_lowercase()
+            } else {
+                variant.clone()
+            });
+        }
+        if language == Language::CSharp {
+            code.push_str("    }\n");
+        }
+        if language == Language::V {
+            code.push_str("}\n");
+        }
+    }
+    for (definitions, union) in [(&parsed.structs, false), (&parsed.unions, true)] {
+        for definition in definitions {
+            if !declared.contains(&definition.name) {
+                continue;
+            }
+            emitted.insert(definition.name.clone());
+            render_aggregate(
+                &mut code,
+                language,
+                &definition.name,
+                &definition.fields,
+                union,
+            );
+        }
+    }
+    // Forward tags are opaque objects; only their pointers are meaningful. Share the tag
+    // definition among aliases, rather than emitting incompatible placeholder objects.
+    for alias in &parsed.typedefs {
+        if !declared.contains(&alias.name) {
+            continue;
+        }
+        if let Some(tag) = alias
+            .target
+            .strip_prefix("struct ")
+            .or_else(|| alias.target.strip_prefix("union "))
+        {
+            if emitted.insert(tag.to_string()) {
+                render_aggregate(&mut code, language, tag, &[], false);
+            }
+        }
+    }
+    for alias in &parsed.typedefs {
+        if !declared.contains(&alias.name) || emitted.contains(&alias.name) {
+            continue;
+        }
+        let target = mapped_type(language, &alias.target);
+        match language {
+            // C# has no exported typedefs. Expand aliases when mapping signatures and fields
+            // (below), while preserving an opaque alias as its own named declaration.
+            Language::CSharp => {
+                if let Some(tag) = alias
+                    .target
+                    .strip_prefix("struct ")
+                    .or_else(|| alias.target.strip_prefix("union "))
+                {
+                    let definition = parsed
+                        .structs
+                        .iter()
+                        .chain(parsed.unions.iter())
+                        .find(|definition| definition.name == tag);
+                    let fields = definition
+                        .map(|definition| definition.fields.as_slice())
+                        .unwrap_or(&[]);
+                    render_aggregate(
+                        &mut code,
+                        language,
+                        &alias.name,
+                        fields,
+                        alias.target.starts_with("union "),
+                    );
+                }
+            }
+            Language::Nim => {
+                code.push_str(&format!("type {name}* = {target}\n", name = alias.name))
+            }
+            Language::D => code.push_str(&format!("alias {name} = {target};\n", name = alias.name)),
+            Language::Odin => code.push_str(&format!("{name} :: {target}\n", name = alias.name)),
+            Language::V => {}
+            _ => unreachable!(),
+        }
+    }
+    code.push('\n');
+    if language == Language::Nim {
+        return nim_type_block(&code);
+    }
+    code
+}
+
+/// Nim requires mutually-referencing objects and aliases in one type section.
+fn nim_type_block(declarations: &str) -> String {
+    let mut types = String::from("type\n");
+    let mut constants = String::new();
+    for line in declarations.lines() {
+        if let Some(declaration) = line.strip_prefix("type ") {
+            types.push_str(&format!("  {declaration}\n"));
+        } else if line.starts_with("const ") {
+            constants.push_str(line);
+            constants.push('\n');
+        } else if !line.is_empty() {
+            types.push_str(&format!("  {line}\n"));
+        }
+    }
+    if types == "type\n" {
+        types.clear();
+    }
+    types.push_str(&constants);
+    types.push('\n');
+    types
+}
+
+fn render_aggregate(
+    code: &mut String,
+    language: Language,
+    name: &str,
+    fields: &[(String, String)],
+    union: bool,
+) {
+    match language {
+        Language::CSharp => code.push_str(&format!(
+            "    [StructLayout(LayoutKind.{layout})]\n    public struct {name}\n    {{\n",
+            layout = if union { "Explicit" } else { "Sequential" }
+        )),
+        Language::D => code.push_str(&format!(
+            "{kind} {name} {{\n",
+            kind = if union { "union" } else { "struct" }
+        )),
+        Language::Nim => code.push_str(&format!(
+            "type {name}* {{.bycopy{union}.}} = object\n",
+            union = if union { ", union" } else { "" }
+        )),
+        Language::Odin => code.push_str(&format!(
+            "{name} :: struct {union}{{\n",
+            union = if union { "#raw_union " } else { "" }
+        )),
+        Language::V => code.push_str(&format!(
+            "{kind} C.{name} {{\n",
+            kind = if union { "union" } else { "struct" }
+        )),
+        _ => unreachable!(),
+    }
+    for (ty, field) in fields {
+        let mapped = mapped_type(language, ty);
+        match language {
+            Language::CSharp => {
+                if union {
+                    code.push_str("        [FieldOffset(0)]\n");
+                }
+                if let Some((base, dims)) = split_array_dims(ty) {
+                    let length = dims
+                        .iter()
+                        .filter_map(|d| d.parse::<usize>().ok())
+                        .product::<usize>();
+                    code.push_str(&format!(
+                        "        public fixed {} {field}[{length}];\n",
+                        mapped_type(language, &base)
+                    ));
+                } else {
+                    code.push_str(&format!("        public {mapped} {field};\n"));
+                }
+            }
+            Language::D => code.push_str(&format!("    {mapped} {field};\n")),
+            Language::Nim => code.push_str(&format!("  {field}*: {mapped}\n")),
+            Language::Odin => code.push_str(&format!("    {field}: {mapped},\n")),
+            Language::V => code.push_str(&format!("    {field} {mapped}\n")),
+            _ => unreachable!(),
+        }
+    }
+    if language != Language::Nim {
+        code.push_str("}\n");
     }
 }
 
-fn d_type(c_type: &str) -> &'static str {
-    match c_type.trim() {
-        "void" => "void",
-        "int" => "int",
-        "const char *" | "char *" | "char*" | "const char*" => "const(char)*",
-        "int *" | "int*" => "int*",
-        _ => "void*",
-    }
+fn csharp_type(c_type: &str) -> String {
+    mapped_type(Language::CSharp, c_type)
 }
 
-fn nim_type(c_type: &str) -> &'static str {
-    match c_type.trim() {
-        "void" => "void",
-        "int" => "cint",
-        "const char *" | "char *" | "char*" | "const char*" => "cstring",
-        "int *" | "int*" => "ptr cint",
-        _ => "pointer",
-    }
+fn d_type(c_type: &str) -> String {
+    mapped_type(Language::D, c_type)
 }
 
-fn odin_type(c_type: &str) -> &'static str {
-    match c_type.trim() {
-        "void" => "void",
-        "int" => "c.int",
-        "const char *" | "char *" | "char*" | "const char*" => "cstring",
-        "int *" | "int*" => "^c.int",
-        _ => "rawptr",
-    }
+fn nim_type(c_type: &str) -> String {
+    mapped_type(Language::Nim, c_type)
+}
+
+fn odin_type(c_type: &str) -> String {
+    mapped_type(Language::Odin, c_type)
 }
 
 fn hare_type(c_type: &str) -> &'static str {
@@ -825,14 +1372,8 @@ fn hare_type(c_type: &str) -> &'static str {
     }
 }
 
-fn v_type(c_type: &str) -> &'static str {
-    match c_type.trim() {
-        "void" => "void",
-        "int" => "int",
-        "const char *" | "char *" | "char*" | "const char*" => "&char",
-        "int *" | "int*" => "&int",
-        _ => "voidptr",
-    }
+fn v_type(c_type: &str) -> String {
+    mapped_type(Language::V, c_type)
 }
 
 #[cfg(test)]
