@@ -32,6 +32,16 @@ pub(crate) struct TypedefDef {
 pub(crate) struct StructDef {
     pub(crate) name: String,
     pub(crate) fields: Vec<(String, String)>,
+    /// Bitfield declarations indexed by their position amongst ordinary fields.
+    pub(crate) bitfields: Vec<BitfieldDef>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct BitfieldDef {
+    pub(crate) position: usize,
+    pub(crate) c_type: String,
+    pub(crate) name: Option<String>,
+    pub(crate) width: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -241,18 +251,43 @@ pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
     let fields_str = &content[start + 1..end];
 
     let mut fields = Vec::new();
+    let mut bitfields = Vec::new();
     for field in fields_str.split(';') {
         let field = field.trim();
         if field.is_empty() || field.starts_with("//") {
             continue;
         }
 
-        if let Some((field_type, field_name)) = parse_c_field(field) {
+        if let Some((declaration, width)) = field.split_once(':') {
+            let width = width.trim().parse().unwrap_or(usize::MAX);
+            let (c_type, name) = match parse_c_field(declaration) {
+                Some((typ, name))
+                    if !matches!(name.as_str(), "int" | "char" | "short" | "long") =>
+                {
+                    (typ, Some(name))
+                }
+                _ => (declaration.trim().to_string(), None),
+            };
+            bitfields.push(BitfieldDef {
+                position: fields.len(),
+                c_type: match c_type.as_str() {
+                    "unsigned" => "unsigned int".to_string(),
+                    "signed" => "int".to_string(),
+                    _ => c_type,
+                },
+                name,
+                width,
+            });
+        } else if let Some((field_type, field_name)) = parse_c_field(field) {
             fields.push((field_type, field_name));
         }
     }
 
-    Some(StructDef { name, fields })
+    Some(StructDef {
+        name,
+        fields,
+        bitfields,
+    })
 }
 
 /// Decay a C array parameter type to the pointer C passes: the outermost dimension becomes `*`,
@@ -936,5 +971,21 @@ mod type_mapping_tests {
         // unqualified mappings are unchanged.
         assert_eq!(c_type_to_rust("const char *"), "*const c_char");
         assert_eq!(c_type_to_rust("void *"), "*mut c_void");
+    }
+    #[test]
+    fn bitfields_keep_widths_and_declaration_positions() {
+        let h = super::parse_c_header("typedef struct { unsigned flags : 3; char tail; unsigned : 0; unsigned count : 5; } Bits;");
+        assert_eq!(
+            h.structs[0].fields,
+            vec![("char".to_string(), "tail".to_string())]
+        );
+        let bits = &h.structs[0].bitfields;
+        assert_eq!(bits.len(), 3);
+        assert_eq!((bits[0].position, bits[0].width), (0, 3));
+        assert_eq!(bits[0].c_type, "unsigned int");
+        assert_eq!(bits[0].name.as_deref(), Some("flags"));
+        assert_eq!((bits[1].position, bits[1].width), (1, 0));
+        assert!(bits[1].name.is_none());
+        assert_eq!((bits[2].position, bits[2].width), (1, 5));
     }
 }

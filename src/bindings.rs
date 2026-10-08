@@ -285,12 +285,26 @@ fn generate_union(union_def: &StructDef, warnings: &mut Vec<String>) -> Option<S
         ));
         return None;
     };
+    for field in &union_def.bitfields {
+        let Some((size, _)) = bitfield_layout(&field.c_type) else {
+            warnings.push(format!("Skipped union {name}: unsupported bitfield layout"));
+            return None;
+        };
+        if field.width == 0 || field.width > size * 8 {
+            warnings.push(format!("Skipped union {name}: unsupported bitfield width"));
+            return None;
+        }
+    }
     let mut code = String::new();
     // No derives: C-ABI union fields (scalars, pointers, arrays of Copy) are themselves Copy so the
     // union is valid without ManuallyDrop, but Debug/Default cannot be derived for a union.
     code.push_str(TYPE_ALLOW);
     code.push_str("#[repr(C)]\n");
     code.push_str(&format!("pub union {name} {{\n"));
+    for (index, field) in union_def.bitfields.iter().enumerate() {
+        let typ = c_type_to_rust_checked(&field.c_type).ok()?;
+        code.push_str(&format!("    pub __eq_bitfield_storage_{index}: {typ},\n"));
+    }
     for (field_type, field_name) in &union_def.fields {
         let Some(field) = rust_ident(field_name) else {
             warnings.push(format!(
@@ -307,6 +321,115 @@ fn generate_union(union_def: &StructDef, warnings: &mut Vec<String>) -> Option<S
     Some(code)
 }
 
+/// Scalar/array layout used for the native GCC/Clang bitfield allocation convention.
+/// Unknown aggregate layouts are rejected rather than silently emitting a smaller struct.
+fn bitfield_layout(c_type: &str) -> Option<(usize, usize)> {
+    let typ = c_type_to_rust_checked(c_type).ok()?;
+    macro_rules! layout {
+        ($typ:ty) => {
+            (std::mem::size_of::<$typ>(), std::mem::align_of::<$typ>())
+        };
+    }
+    let layout = match typ.as_str() {
+        "u8" | "i8" | "c_char" | "c_schar" | "c_uchar" | "bool" => layout!(u8),
+        "u16" | "i16" | "c_short" | "c_ushort" => layout!(std::os::raw::c_short),
+        "u32" | "i32" | "c_int" | "c_uint" => layout!(std::os::raw::c_int),
+        "c_float" => layout!(std::os::raw::c_float),
+        "u64" | "i64" | "c_longlong" | "c_ulonglong" => layout!(std::os::raw::c_longlong),
+        "c_double" => layout!(std::os::raw::c_double),
+        "c_long" | "c_ulong" => layout!(std::os::raw::c_long),
+        "usize" | "isize" => layout!(usize),
+        _ if typ.starts_with("*mut ") || typ.starts_with("*const ") => layout!(*const ()),
+        _ => {
+            let (base, dims) = crate::c_header::split_array_dims(c_type)?;
+            if dims.is_empty() {
+                return None;
+            }
+            let (mut size, align) = bitfield_layout(&base)?;
+            for dim in dims {
+                size = size.checked_mul(dim.parse::<usize>().ok()?)?;
+            }
+            return Some((size, align));
+        }
+    };
+    Some(layout)
+}
+
+fn bitfield_storage(def: &StructDef) -> Option<(Vec<String>, usize)> {
+    if cfg!(target_env = "msvc") {
+        return None;
+    }
+    let mut insertions = vec![String::new(); def.fields.len() + 1];
+    let mut offset = 0usize;
+    let mut alignment = 1;
+    for (position, insertion) in insertions.iter_mut().enumerate() {
+        let start = offset;
+        let mut cursor = offset.checked_mul(8)?;
+        for field in def
+            .bitfields
+            .iter()
+            .filter(|field| field.position == position)
+        {
+            let (size, align) = bitfield_layout(&field.c_type)?;
+            let rust_type = c_type_to_rust_checked(&field.c_type).ok()?;
+            if !matches!(
+                rust_type.as_str(),
+                "u8" | "i8"
+                    | "u16"
+                    | "i16"
+                    | "u32"
+                    | "i32"
+                    | "u64"
+                    | "i64"
+                    | "c_char"
+                    | "c_schar"
+                    | "c_uchar"
+                    | "c_short"
+                    | "c_ushort"
+                    | "c_int"
+                    | "c_uint"
+                    | "c_long"
+                    | "c_ulong"
+                    | "c_longlong"
+                    | "c_ulonglong"
+                    | "bool"
+            ) {
+                return None;
+            }
+            let bits = size.checked_mul(8)?;
+            if field.width > bits || (field.width == 0 && field.name.is_some()) {
+                return None;
+            }
+            if field.width == 0 {
+                cursor = cursor.div_ceil(bits).checked_mul(bits)?;
+            } else {
+                if cursor % bits + field.width > bits {
+                    cursor = cursor.div_ceil(bits).checked_mul(bits)?;
+                }
+                cursor = cursor.checked_add(field.width)?;
+                if field.name.is_some() {
+                    alignment = alignment.max(align);
+                }
+            }
+        }
+        offset = cursor.div_ceil(8);
+        if offset > start {
+            *insertion = format!(
+                "    pub __eq_bitfield_storage_{position}: [u8; {}],\n",
+                offset - start
+            );
+        }
+        if let Some((typ, _)) = def.fields.get(position) {
+            let (size, align) = bitfield_layout(typ)?;
+            offset = offset
+                .div_ceil(align)
+                .checked_mul(align)?
+                .checked_add(size)?;
+        }
+    }
+    Some((insertions, alignment))
+}
+
 fn generate_struct(
     struct_def: &StructDef,
     options: &BindingOptions,
@@ -318,6 +441,19 @@ fn generate_struct(
             struct_def.name
         ));
         return None;
+    };
+    let storage = if struct_def.bitfields.is_empty() {
+        None
+    } else {
+        match bitfield_storage(struct_def) {
+            Some(storage) => Some(storage),
+            None => {
+                warnings.push(format!(
+                    "Skipped struct {name}: unsupported bitfield layout"
+                ));
+                return None;
+            }
+        }
     };
     let mut code = String::new();
     let mut derives = vec!["Copy", "Clone"];
@@ -331,7 +467,16 @@ fn generate_struct(
     code.push_str(&format!("#[derive({})]\n", derives.join(", ")));
     code.push_str("#[repr(C)]\n");
     code.push_str(&format!("pub struct {name} {{\n"));
-    for (field_type, field_name) in &struct_def.fields {
+    if let Some((_, alignment)) = &storage {
+        code.push_str(&format!(
+            "    __eq_bitfield_alignment: [u{}; 0],\n",
+            alignment * 8
+        ));
+    }
+    for (position, (field_type, field_name)) in struct_def.fields.iter().enumerate() {
+        if let Some((insertions, _)) = &storage {
+            code.push_str(&insertions[position]);
+        }
         let Some(field) = rust_ident(field_name) else {
             warnings.push(format!(
                 "Skipped field with invalid name on {name}: {field_name}"
@@ -346,6 +491,9 @@ fn generate_struct(
                 warnings.push(format!("Skipped field {name}.{field}: {reason}"));
             }
         }
+    }
+    if let Some((insertions, _)) = &storage {
+        code.push_str(&insertions[struct_def.fields.len()]);
     }
     code.push_str("}\n");
     Some(code)
@@ -657,5 +805,88 @@ mod tests {
         assert!(!binding.code.contains("not a type"));
         assert!(!binding.code.contains("pub fn evil("));
         assert!(binding.code.contains("pub fn ok()"));
+    }
+    #[test]
+    fn bitfield_storage_preserves_native_c_layout() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("bits.h");
+        let declarations = "typedef struct { unsigned flags : 3; char tail; } Single;\n\
+            typedef struct { unsigned a : 3; unsigned b : 5; char tail; } Adjacent;\n\
+            typedef struct { unsigned a : 30; unsigned b : 3; char tail; } Overflow;\n\
+            typedef struct { char head; unsigned a : 3; char tail; } Prefix;\n\
+            typedef struct { unsigned a : 3; unsigned : 0; char tail; } Boundary;\n\
+            typedef struct { unsigned a : 3; unsigned tail : 5; } Only;\n\
+            typedef struct { unsigned : 3; unsigned a : 5; char tail; } Unnamed;\n\
+            typedef struct { unsigned char a : 3; unsigned b : 5; char tail; } Mixed;\n";
+        std::fs::write(&header, declarations).unwrap();
+        let binding = generate_bindings(&header, &BindingOptions::default()).unwrap();
+        assert!(binding.warnings.is_empty(), "{:?}", binding.warnings);
+        assert!(binding.code.contains("__eq_bitfield_storage_0: [u8; 1]"));
+        assert!(binding.code.contains("__eq_bitfield_storage_0: [u8; 5]"));
+        let rust = dir.path().join("layout.rs");
+        let mut checks = String::new();
+        for name in [
+            "Single", "Adjacent", "Overflow", "Prefix", "Boundary", "Only", "Unnamed", "Mixed",
+        ] {
+            let offset = if name == "Only" {
+                "0".to_string()
+            } else {
+                format!("std::mem::offset_of!({name}, tail)")
+            };
+            checks.push_str(&format!("println!(\"{{}} {{}} {{}}\", std::mem::size_of::<{name}>(), std::mem::align_of::<{name}>(), {offset});\n"));
+        }
+        std::fs::write(&rust, format!("{}\nfn main() {{{checks}}}", binding.code)).unwrap();
+        let rust_bin = dir.path().join("rust_layout");
+        let status = std::process::Command::new("rustc")
+            .args(["--edition", "2021", "-D", "warnings"])
+            .arg(&rust)
+            .arg("-o")
+            .arg(&rust_bin)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let rust_output = std::process::Command::new(&rust_bin).output().unwrap();
+        // Compare size, alignment and following-field offsets with the system C compiler.
+        let c = dir.path().join("layout.c");
+        let mut checks = String::new();
+        for name in [
+            "Single", "Adjacent", "Overflow", "Prefix", "Boundary", "Only", "Unnamed", "Mixed",
+        ] {
+            let offset = if name == "Only" {
+                "(size_t)0".to_string()
+            } else {
+                format!("offsetof({name}, tail)")
+            };
+            checks.push_str(&format!(
+                "printf(\"%zu %zu %zu\\n\", sizeof({name}), _Alignof({name}), {offset});\n"
+            ));
+        }
+        std::fs::write(&c, format!("#include <stdio.h>\n#include <stddef.h>\n{declarations}\nint main(void) {{{checks}}}")).unwrap();
+        let c_bin = dir.path().join("c_layout");
+        let status = std::process::Command::new("cc")
+            .arg(&c)
+            .arg("-o")
+            .arg(&c_bin)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let c_output = std::process::Command::new(c_bin).output().unwrap();
+        assert_eq!(rust_output.stdout, c_output.stdout);
+    }
+    #[test]
+    fn unsupported_bitfields_do_not_emit_corrupt_layouts() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("unsupported.h");
+        std::fs::write(
+            &header,
+            "typedef struct { unsigned flags : 99; char tail; } Invalid;\n",
+        )
+        .unwrap();
+        let binding = generate_bindings(&header, &BindingOptions::default()).unwrap();
+        assert!(!binding.code.contains("pub struct Invalid"));
+        assert!(binding
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("unsupported bitfield layout")));
     }
 }
