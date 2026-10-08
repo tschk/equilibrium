@@ -296,10 +296,12 @@ fn generate_union(union_def: &StructDef, warnings: &mut Vec<String>) -> Option<S
         }
     }
     let mut code = String::new();
-    // No derives: C-ABI union fields (scalars, pointers, arrays of Copy) are themselves Copy so the
+    // C-ABI union fields (scalars, pointers, arrays of Copy) are themselves Copy so the
     // union is valid without ManuallyDrop, but Debug/Default cannot be derived for a union.
     code.push_str(TYPE_ALLOW);
     code.push_str("#[repr(C)]\n");
+    // Copy/Clone also allow this union to be stored in a generated struct or union.
+    code.push_str("#[derive(Copy, Clone)]\n");
     code.push_str(&format!("pub union {name} {{\n"));
     for (index, field) in union_def.bitfields.iter().enumerate() {
         let typ = c_type_to_rust_checked(&field.c_type).ok()?;
@@ -529,6 +531,68 @@ mod tests {
     use crate::c_header::{c_type_to_rust, parse_function_line, parse_typedef_line};
     use crate::limits::{MAX_HEADER_BYTES, MAX_HEADER_LINES};
     use tempfile::tempdir;
+
+    #[test]
+    fn nested_anonymous_types_compile_and_preserve_layout() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("nested.h");
+        std::fs::write(
+            &header,
+            r#"
+typedef struct Outer {
+    struct { int x; struct { short y; } deep; } a;
+    union {
+        int value;
+        struct { int first; int second; } pair;
+    };
+    enum { ZERO = 0, ONE = 1 } state;
+    int tail;
+} Outer;
+int use_outer(Outer *value);
+"#,
+        )
+        .unwrap();
+        let binding = generate_bindings(&header, &BindingOptions::default()).unwrap();
+        assert!(binding.warnings.is_empty(), "{:?}", binding.warnings);
+        assert!(binding.code.contains("pub struct Outer__anon_0"));
+        assert!(binding.code.contains("pub struct Outer__anon_0__anon_1"));
+        assert!(binding.code.contains("pub union Outer__anon_1"));
+        assert!(binding.code.contains("pub enum Outer__anon_2"));
+        assert!(binding.code.contains("pub a: Outer__anon_0"));
+        assert!(binding.code.contains("pub __anon_1: Outer__anon_1"));
+        assert!(binding.code.contains("pub state: Outer__anon_2"));
+        assert!(binding.code.contains("pub tail: c_int"));
+        let output = dir.path().join("out.rs");
+        std::fs::write(
+            &output,
+            format!(
+                "{}\nconst _: () = assert!(std::mem::size_of::<Outer>() == 24);",
+                binding.code
+            ),
+        )
+        .unwrap();
+        let result = std::process::Command::new("rustc")
+            .args([
+                "--edition",
+                "2021",
+                "--crate-type",
+                "lib",
+                "-D",
+                "warnings",
+                "--emit",
+                "metadata",
+                "-o",
+            ])
+            .arg(dir.path().join("out.rmeta"))
+            .arg(output)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
 
     #[test]
     fn test_c_type_to_rust() {

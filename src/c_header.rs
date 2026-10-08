@@ -126,76 +126,72 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
             }
         }
 
-        if line.starts_with("typedef") {
-            if line.contains("enum") && line.contains('{') {
-                let mut enum_content = String::new();
-                let mut extend_lines = 0usize;
-                while i < lines.len() && !lines[i].contains('}') {
-                    extend_lines += 1;
-                    if extend_lines > MAX_TYPEDEF_BLOCK_LINES {
+        if line.starts_with("typedef")
+            || (["struct ", "union ", "enum "]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+                && line.contains('{'))
+        {
+            let aggregate = line.strip_prefix("typedef").unwrap_or(line).trim();
+            let kind = aggregate.split_whitespace().next().unwrap_or("");
+            if matches!(kind, "struct" | "union" | "enum") && line.contains('{') {
+                let mut block = String::new();
+                let mut depth = 0isize;
+                let mut count = 0;
+                loop {
+                    let current = lines[i];
+                    block.push_str(current);
+                    block.push(' ');
+                    depth += current.chars().filter(|&c| c == '{').count() as isize;
+                    depth -= current.chars().filter(|&c| c == '}').count() as isize;
+                    count += 1;
+                    if depth == 0 || count >= MAX_TYPEDEF_BLOCK_LINES || i + 1 >= lines.len() {
                         break;
                     }
-                    enum_content.push_str(lines[i]);
-                    enum_content.push(' ');
                     i += 1;
                 }
-                if i < lines.len() && lines[i].contains('}') {
-                    enum_content.push_str(lines[i]);
-                }
-                if let Some(parsed) = parse_typedef_enum(&enum_content) {
-                    typedefs.push(TypedefDef {
-                        name: parsed.name.clone(),
-                        target: format!("enum {}", parsed.name),
-                        rust_override: None,
-                    });
-                    enums.push(parsed);
-                }
-            } else if line.contains("struct") && line.contains('{') {
-                let mut struct_content = String::new();
-                let mut extend_lines = 0usize;
-                while i < lines.len() && !lines[i].contains('}') {
-                    extend_lines += 1;
-                    if extend_lines > MAX_TYPEDEF_BLOCK_LINES {
-                        break;
+                if let Some(end) = block.rfind('}') {
+                    let suffix = block[end + 1..].trim().trim_end_matches(';').trim();
+                    let name = if suffix.is_empty() {
+                        aggregate
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim_end_matches('{')
+                    } else {
+                        suffix
+                    };
+                    let block = if suffix.is_empty() {
+                        format!("typedef {} {name};", &block[..=end])
+                    } else {
+                        block.clone()
+                    };
+                    if is_c_identifier(name) {
+                        let expanded = expand_nested_types(
+                            &block,
+                            name,
+                            &mut structs,
+                            &mut unions,
+                            &mut enums,
+                        );
+                        // A union body parses like a struct body (name after `}`, fields between braces).
+                        if kind == "enum" {
+                            if let Some(parsed) = parse_typedef_enum(&expanded) {
+                                enums.push(parsed);
+                            }
+                        } else if let Some(parsed) = parse_typedef_struct(&expanded) {
+                            if kind == "union" {
+                                unions.push(parsed);
+                            } else {
+                                structs.push(parsed);
+                            }
+                        }
+                        typedefs.push(TypedefDef {
+                            name: name.to_string(),
+                            target: format!("{kind} {name}"),
+                            rust_override: None,
+                        });
                     }
-                    struct_content.push_str(lines[i]);
-                    struct_content.push(' ');
-                    i += 1;
-                }
-                if i < lines.len() && lines[i].contains('}') {
-                    struct_content.push_str(lines[i]);
-                }
-                if let Some(parsed) = parse_typedef_struct(&struct_content) {
-                    typedefs.push(TypedefDef {
-                        name: parsed.name.clone(),
-                        target: format!("struct {}", parsed.name),
-                        rust_override: None,
-                    });
-                    structs.push(parsed);
-                }
-            } else if line.contains("union") && line.contains('{') {
-                let mut union_content = String::new();
-                let mut extend_lines = 0usize;
-                while i < lines.len() && !lines[i].contains('}') {
-                    extend_lines += 1;
-                    if extend_lines > MAX_TYPEDEF_BLOCK_LINES {
-                        break;
-                    }
-                    union_content.push_str(lines[i]);
-                    union_content.push(' ');
-                    i += 1;
-                }
-                if i < lines.len() && lines[i].contains('}') {
-                    union_content.push_str(lines[i]);
-                }
-                // A union body parses like a struct body (name after `}`, fields between braces).
-                if let Some(parsed) = parse_typedef_struct(&union_content) {
-                    typedefs.push(TypedefDef {
-                        name: parsed.name.clone(),
-                        target: format!("union {}", parsed.name),
-                        rust_override: None,
-                    });
-                    unions.push(parsed);
                 }
             } else if line.ends_with(';') {
                 if line.contains("(*") {
@@ -242,6 +238,89 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     }
 }
 
+/// Split declarations only at the current brace level; nested aggregate members keep their body.
+fn aggregate_fields(body: &str) -> Vec<&str> {
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut fields = Vec::new();
+    for (index, ch) in body.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => {
+                fields.push(body[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if !body[start..].trim().is_empty() {
+        fields.push(body[start..].trim());
+    }
+    fields
+}
+
+/// Hoist inline aggregates into ordinary declarations consumed by the existing emitters.
+/// Unnamed C11 aggregate members get a storage field, retaining their size and alignment.
+fn expand_nested_types(
+    content: &str,
+    parent: &str,
+    structs: &mut Vec<StructDef>,
+    unions: &mut Vec<StructDef>,
+    enums: &mut Vec<EnumDef>,
+) -> String {
+    if content
+        .trim_start()
+        .strip_prefix("typedef")
+        .unwrap_or(content)
+        .trim_start()
+        .starts_with("enum ")
+    {
+        return content.to_string();
+    }
+    let Some(start) = content.find('{') else {
+        return content.to_string();
+    };
+    let Some(end) = content.rfind('}') else {
+        return content.to_string();
+    };
+    let mut body = String::new();
+    for (index, field) in aggregate_fields(&content[start + 1..end])
+        .into_iter()
+        .enumerate()
+    {
+        let kind = field.split_whitespace().next().unwrap_or("");
+        if matches!(kind, "struct" | "union" | "enum") && field.contains('{') {
+            let close = field.rfind('}').unwrap();
+            let suffix = field[close + 1..].trim();
+            let type_name = format!("{parent}__anon_{index}");
+            let nested = format!("typedef {} {type_name};", &field[..=close]);
+            let expanded = expand_nested_types(&nested, &type_name, structs, unions, enums);
+            if kind == "enum" {
+                if let Some(parsed) = parse_typedef_enum(&expanded) {
+                    enums.push(parsed);
+                }
+            } else if let Some(parsed) = parse_typedef_struct(&expanded) {
+                if kind == "union" {
+                    unions.push(parsed);
+                } else {
+                    structs.push(parsed);
+                }
+            }
+            let declarator = if suffix.is_empty() {
+                format!("__anon_{index}")
+            } else {
+                suffix.to_string()
+            };
+            body.push_str(&format!("{type_name} {declarator};"));
+        } else {
+            body.push_str(field);
+            body.push(';');
+        }
+    }
+    format!("{}{}{}", &content[..start + 1], body, &content[end..])
+}
+
 pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
     let content = content.trim();
     let end_part = content.strip_suffix(';')?.trim();
@@ -252,7 +331,7 @@ pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
 
     let mut fields = Vec::new();
     let mut bitfields = Vec::new();
-    for field in fields_str.split(';') {
+    for field in aggregate_fields(fields_str) {
         let field = field.trim();
         if field.is_empty() || field.starts_with("//") {
             continue;
@@ -858,6 +937,43 @@ pub(crate) fn header_stem(path: &Path) -> String {
 #[cfg(test)]
 mod type_mapping_tests {
     use super::c_type_to_rust;
+
+    #[test]
+    fn anonymous_aggregate_preserves_inner_bitfield_metadata() {
+        let parsed = super::parse_c_header("typedef struct { struct { unsigned flags : 3; unsigned ready : 5; int tail; } inner; int final_value; } Envelope;");
+        let inner = parsed
+            .structs
+            .iter()
+            .find(|s| s.name == "Envelope__anon_0")
+            .unwrap();
+        assert_eq!(inner.bitfields.len(), 2);
+        assert_eq!(inner.bitfields[0].width, 3);
+        assert_eq!(inner.bitfields[1].width, 5);
+        assert_eq!(inner.fields, vec![("int".into(), "tail".into())]);
+        let outer = parsed
+            .structs
+            .iter()
+            .find(|s| s.name == "Envelope")
+            .unwrap();
+        assert!(outer.bitfields.is_empty());
+        assert_eq!(outer.fields[0], ("Envelope__anon_0".into(), "inner".into()));
+    }
+
+    #[test]
+    fn named_outer_aggregate_keeps_multiline_nested_members() {
+        let parsed = super::parse_c_header("struct Named {\nstruct {\nint x;\n} point;\nunion { int integer; float real; } value;\n};\nint following(void);");
+        assert_eq!(parsed.structs.len(), 2);
+        assert_eq!(parsed.unions.len(), 1);
+        let outer = parsed.structs.iter().find(|s| s.name == "Named").unwrap();
+        assert_eq!(
+            outer.fields,
+            vec![
+                ("Named__anon_0".into(), "point".into()),
+                ("Named__anon_1".into(), "value".into())
+            ]
+        );
+        assert_eq!(parsed.functions[0].name, "following");
+    }
 
     #[test]
     fn function_pointer_typedef_emits_rust_fn_alias() {
