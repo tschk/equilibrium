@@ -460,6 +460,7 @@ pub fn scan_directory(dir: &Path) -> Vec<(std::path::PathBuf, Language)> {
 #[cfg(test)]
 mod tests {
 
+    #[cfg(unix)]
     #[test]
     fn find_binary_only_accepts_executable_regular_files_in_extra_paths() {
         use std::os::unix::fs::PermissionsExt;
