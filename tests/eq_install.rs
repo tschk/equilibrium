@@ -1,4 +1,4 @@
-#![cfg(feature = "cli")]
+#![cfg(all(unix, feature = "cli"))]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
