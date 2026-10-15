@@ -870,6 +870,7 @@ int use_outer(Outer *value);
         assert!(!binding.code.contains("pub fn evil("));
         assert!(binding.code.contains("pub fn ok()"));
     }
+    #[cfg(not(target_env = "msvc"))]
     #[test]
     fn bitfield_storage_preserves_native_c_layout() {
         let dir = tempdir().unwrap();
@@ -936,6 +937,25 @@ int use_outer(Outer *value);
         assert!(status.success());
         let c_output = std::process::Command::new(c_bin).output().unwrap();
         assert_eq!(rust_output.stdout, c_output.stdout);
+    }
+    /// The layout algorithm models the Itanium ABI; MSVC packs bitfields
+    /// differently, so bitfield structs are skipped with a warning there
+    /// instead of emitting a wrong layout. `bitfield_storage` returns None
+    /// under `cfg!(target_env = "msvc")`.
+    #[cfg(target_env = "msvc")]
+    #[test]
+    fn bitfield_structs_are_skipped_on_msvc() {
+        let dir = tempdir().unwrap();
+        let header = dir.path().join("bits.h");
+        let declarations = "typedef struct { unsigned flags : 3; char tail; } Single;\n";
+        std::fs::write(&header, declarations).unwrap();
+        let binding = generate_bindings(&header, &BindingOptions::default()).unwrap();
+        assert!(!binding.code.contains("__eq_bitfield_storage_0"));
+        assert!(!binding.code.contains("pub struct Single"));
+        assert!(binding
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("Skipped struct Single: unsupported bitfield layout")));
     }
     #[test]
     fn unsupported_bitfields_do_not_emit_corrupt_layouts() {
