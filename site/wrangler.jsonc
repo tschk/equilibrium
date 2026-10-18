@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "equilibrium-site",
+  "compatibility_date": "2026-10-19",
+  "account_id": "fc62a6e6528bec6d3d81c3bf8967ceeb",
+  "assets": {
+    "directory": "./dist",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "none"
+  },
+  "routes": [
+    { "pattern": "eq.tsc.hk", "custom_domain": true },
+    { "pattern": "equilibrium.tsc.hk", "custom_domain": true }
+  ]
+}
