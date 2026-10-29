@@ -35,6 +35,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
         Language::Zig => (zig_functions(source), zig_type, String::new()),
         Language::Odin => (odin_functions(source), odin_type, String::new()),
         Language::V => (v_functions(source), v_type, String::new()),
+        Language::Hare => (hare_functions(source), hare_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -908,6 +909,78 @@ fn v_type(ty: &str) -> Option<String> {
     )
 }
 
+// ── Hare ───────────────────────────────────────────────────────────────────
+
+/// `export fn name(a: int, b: int) int = …;`, with `@symbol("other")` renaming the symbol.
+/// Hare functions use the C calling convention, and a root module's exports are unmangled.
+fn hare_functions(source: &str) -> Vec<ForeignFn> {
+    let text = strip_c_comments(source);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let mut trimmed = line.trim_start();
+        let mut symbol = None;
+        if let Some(rest) = trimmed.strip_prefix("@symbol(") {
+            symbol = rest.split('"').nth(1).map(str::to_string);
+            trimmed = rest
+                .split_once(')')
+                .map_or("", |(_, after)| after.trim_start());
+        }
+        let Some(rest) = trimmed.strip_prefix("export fn ") else {
+            continue;
+        };
+        let name_end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let signature = signature_text(&lines, index, '=');
+        let after_fn = signature.split_once("fn ").map_or("", |(_, rest)| rest);
+        let Some((params, after)) = parenthesized(after_fn) else {
+            continue;
+        };
+        let Some(params) = named_params(params, &[], ":") else {
+            continue;
+        };
+        let ret = after.trim().trim_end_matches(';').trim().to_string();
+        out.push(ForeignFn {
+            symbol: symbol.unwrap_or_else(|| rest[..name_end].to_string()),
+            params,
+            ret: (!ret.is_empty() && ret != "void").then_some(ret),
+        });
+    }
+    out
+}
+
+fn hare_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    let ty = ty.strip_prefix("nullable ").unwrap_or(ty);
+    if let Some(inner) = ty.strip_prefix('*') {
+        return match inner.trim() {
+            "opaque" => Some("void *".to_string()),
+            other => hare_type(other).map(|c| pointer_to(&c, false)),
+        };
+    }
+    Some(
+        match ty {
+            // Hare's `int`/`uint` are 32-bit on every supported target.
+            "int" | "i32" => "int32_t",
+            "uint" | "u32" => "uint32_t",
+            "i8" => "int8_t",
+            "i16" => "int16_t",
+            "i64" => "int64_t",
+            "u8" => "uint8_t",
+            "u16" => "uint16_t",
+            "u64" => "uint64_t",
+            "size" => "size_t",
+            "uintptr" => "uintptr_t",
+            "f32" => "float",
+            "f64" => "double",
+            "bool" => "bool",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,5 +1246,35 @@ pub fn bad(s string) int { return s.len }
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("vm_bad")));
+    }
+
+    #[test]
+    fn hare_header_maps_exported_fns() {
+        let source = r#"
+use strings;
+
+fn helper(a: int) int = a;
+
+export fn hadd(a: int, b: int) int = a + b;
+
+@symbol("h_fill") export fn fill(
+	buf: *u8,
+	n: size,
+	ctx: nullable *opaque,
+) void = void;
+
+export fn takes_str(s: str) size = len(s);
+"#;
+        let out = synthesize(Language::Hare, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int32_t hadd(int32_t a, int32_t b);"), "{h}");
+        assert!(
+            h.contains("void h_fill(uint8_t * buf, size_t n, void * ctx);"),
+            "{h}"
+        );
+        for absent in ["helper", "takes_str("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("takes_str")));
     }
 }

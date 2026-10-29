@@ -266,9 +266,11 @@ impl Language {
                 args
             }
             Language::Hare => {
-                // Hare compiles to object files via QBE
+                // `-t o` writes an object; the default `bin` output type needs a `main`.
                 vec![
                     "build".to_string(),
+                    "-t".to_string(),
+                    "o".to_string(),
                     "-o".to_string(),
                     output.to_string(),
                     input.to_string(),
