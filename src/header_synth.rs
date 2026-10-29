@@ -36,6 +36,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
         Language::Odin => (odin_functions(source), odin_type, String::new()),
         Language::V => (v_functions(source), v_type, String::new()),
         Language::Hare => (hare_functions(source), hare_type, String::new()),
+        Language::CSharp => (csharp_functions(source), csharp_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -981,6 +982,93 @@ fn hare_type(ty: &str) -> Option<String> {
     )
 }
 
+// ── C# (Native AOT) ────────────────────────────────────────────────────────
+
+/// `[UnmanagedCallersOnly(EntryPoint = "name")]` on a following `static` method. Native AOT
+/// exports only methods with an `EntryPoint`; without one there is no C symbol.
+fn csharp_functions(source: &str) -> Vec<ForeignFn> {
+    let text = strip_c_comments(source);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut entry: Option<String> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.contains("UnmanagedCallersOnly") {
+            entry = trimmed
+                .split_once("EntryPoint")
+                .and_then(|(_, after)| after.split('"').nth(1))
+                .map(str::to_string);
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('[') {
+            continue;
+        }
+        let Some(symbol) = entry.take() else {
+            continue;
+        };
+        let signature = signature_text(&lines, index, '{');
+        let signature = signature.split("=>").next().unwrap_or(&signature);
+        let Some(open) = signature.find('(') else {
+            continue;
+        };
+        // `public static unsafe int Add(` -> return type is the word before the method name.
+        let head: Vec<&str> = signature[..open].split_whitespace().collect();
+        if !head.contains(&"static") || head.len() < 2 {
+            continue;
+        }
+        let ret = head[head.len() - 2];
+        let Some((params, _)) = parenthesized(&signature[open..]) else {
+            continue;
+        };
+        let mut parsed = Vec::new();
+        for param in split_top_level_commas(params) {
+            let param = param.trim();
+            if param.is_empty() {
+                continue;
+            }
+            let Some((ty, name)) = param.rsplit_once(char::is_whitespace) else {
+                continue;
+            };
+            parsed.push((name.trim().to_string(), ty.trim().to_string()));
+        }
+        out.push(ForeignFn {
+            symbol,
+            params: parsed,
+            ret: (ret != "void").then(|| ret.to_string()),
+        });
+    }
+    out
+}
+
+/// Blittable types only: `UnmanagedCallersOnly` rejects `bool`, `char`, `string` and arrays.
+fn csharp_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_suffix('*') {
+        return match inner.trim() {
+            "void" => Some("void *".to_string()),
+            other => csharp_type(other).map(|c| pointer_to(&c, false)),
+        };
+    }
+    Some(
+        match ty {
+            "int" | "Int32" => "int32_t",
+            "uint" | "UInt32" => "uint32_t",
+            "long" | "Int64" => "int64_t",
+            "ulong" | "UInt64" => "uint64_t",
+            "short" | "Int16" => "int16_t",
+            "ushort" | "UInt16" => "uint16_t",
+            "byte" | "Byte" => "uint8_t",
+            "sbyte" | "SByte" => "int8_t",
+            "float" | "Single" => "float",
+            "double" | "Double" => "double",
+            "nint" | "IntPtr" => "intptr_t",
+            "nuint" | "UIntPtr" => "uintptr_t",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1276,5 +1364,39 @@ export fn takes_str(s: str) size = len(s);
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("takes_str")));
+    }
+
+    #[test]
+    fn csharp_header_maps_unmanaged_callers_only_entry_points() {
+        let source = r#"
+using System.Runtime.InteropServices;
+public static class Lib {
+    static int Helper(int a) => a;
+
+    [UnmanagedCallersOnly(EntryPoint = "cs_add")]
+    public static int Add(int a, int b) => Helper(a) + b;
+
+    [UnmanagedCallersOnly(EntryPoint = "cs_fill")]
+    public static unsafe void Fill(byte* buf, nuint len,
+                                   void* ctx) { }
+
+    [UnmanagedCallersOnly]
+    public static int NoEntryPoint(int a) => a;
+
+    [UnmanagedCallersOnly(EntryPoint = "cs_name")]
+    public static int Name(string s) => 0;
+}
+"#;
+        let out = synthesize(Language::CSharp, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int32_t cs_add(int32_t a, int32_t b);"), "{h}");
+        assert!(
+            h.contains("void cs_fill(uint8_t * buf, uintptr_t len, void * ctx);"),
+            "{h}"
+        );
+        for absent in ["Helper", "NoEntryPoint", "cs_name("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("cs_name")));
     }
 }

@@ -97,7 +97,7 @@ impl Language {
             Language::Zig => "zig",
             Language::C => "clang",
             Language::Cpp => "clang++",
-            Language::CSharp => "csc",
+            Language::CSharp => "dotnet",
             Language::Rust => "rustc",
             Language::D => "ldc2", // or dmd, gdc
             Language::Nim => "nim",
@@ -113,7 +113,6 @@ impl Language {
             Language::D => &["dmd", "gdc"],
             Language::C => &["gcc", "cc"],
             Language::Cpp => &["g++", "c++"],
-            Language::CSharp => &["dotnet"],
             _ => &[],
         }
     }
@@ -200,15 +199,8 @@ impl Language {
                 args.extend(["-o".to_string(), output.to_string(), input.to_string()]);
                 args
             }
-            Language::CSharp => {
-                // csc emits a managed assembly, not a C ABI library; `compile_to_c` refuses C#
-                // producers (Native AOT is not implemented). Kept for callers of `to_c_args`.
-                vec![
-                    "-target:library".to_string(),
-                    format!("-out:{output}"),
-                    input.to_string(),
-                ]
-            }
+            // `compile_to_c` writes a Native AOT project and runs `dotnet publish` on it instead.
+            Language::CSharp => vec!["publish".to_string(), input.to_string()],
             Language::Rust => {
                 // Rust uses cbindgen for headers + normal compilation
                 vec![
@@ -698,7 +690,7 @@ mod tests {
         assert_eq!(Language::V.version_args(), &["version"]);
         assert_eq!(Language::Hare.version_args(), &["version"]);
         assert_eq!(Language::C.version_args(), &["--version"]);
-        assert_eq!(Language::CSharp.alternative_compilers(), &["dotnet"]);
+        assert!(Language::CSharp.alternative_compilers().is_empty());
     }
 
     #[test]

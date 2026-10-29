@@ -145,7 +145,7 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 | **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed; otherwise **synthesized** from `#[no_mangle]`/`#[export_name]` `extern "C"` and `#[ffi]` functions with primitive and raw-pointer types |
 | **TypeScript/JavaScript** | `scriptc` | `lib<stem>.a` (library mode), linked | generated from `export function`s |
 | **V (Vlang)** | `v` | `lib<stem>.dylib`/`.so` (`v -shared -gc none`), linked with an rpath | **synthesized** from `@[export: 'name']` functions (`int`/`iN`/`uN`, `isize`/`usize`, floats, `bool`, `voidptr`, `charptr`, `&T`) |
-| **C#** | — | **not supported as a source**: `csc` makes a managed assembly and Native AOT is not implemented | — (C# works as a consumer: P/Invoke imports) |
+| **C#** | `dotnet` (.NET 7+ SDK) | `lib<stem>.dylib`/`.so` (`<stem>.dll` on Windows) via `dotnet publish` with `PublishAot` + `NativeLib=Shared`, linked with an rpath | **synthesized** from `[UnmanagedCallersOnly(EntryPoint = "…")]` static methods (blittable types: `int`/`long`/…, `nint`/`nuint`, floats, `T*`); methods without an `EntryPoint` are not exported. The first build downloads the ILCompiler packs from NuGet; Linux needs `clang` and `zlib`. C# also works as a consumer (P/Invoke imports) |
 
 The C header parser understands named and unnamed parameters, pointers, arrays, enums, structs, unions and function-pointer typedefs. A declaration it cannot parse (for example a parameter that is itself a function pointer, or `...`) is left out and reported in `warnings` rather than bound with the wrong arity.
 
