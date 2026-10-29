@@ -137,7 +137,7 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 |----------|----------|-----------------|---------------------|
 | **C** | `clang`/`gcc` | object, linked | **synthesized** from non-`static` definitions, with the file's typedefs, aggregates, `#include <…>`s and constant `#define`s |
 | **C++** | `clang++`/`g++` | object, linked | **synthesized** from `extern "C"` definitions (single or `extern "C" { … }` blocks); signatures must use C types |
-| **Zig** | `zig` | object (`build-obj -OReleaseFast -fPIC`), linked | sibling `<stem>.h` |
+| **Zig** | `zig` | object (`build-obj -OReleaseFast -fPIC`), linked | **synthesized** from `export fn`s (`c_int`…, `iN`/`uN`, `isize`/`usize`, floats, `bool`, `*T`/`[*]T`/`[*c]T`/`?*anyopaque`; slices are skipped). Zig's own `-femit-h` writes nothing in current releases |
 | **D** | `ldc2`/`dmd`/`gdc` | object, linked | **generated** from the compiler's `-HC` header for `extern(C)` functions and structs (`ldc2`/`dmd`; `gdc` has no `-HC`, so it needs `<stem>.h`) |
 | **Odin** | `odin` | object (`-build-mode:obj`), linked | sibling `<stem>.h` |
 | **Hare** | `hare` | object (QBE, Linux only), linked | sibling `<stem>.h` |

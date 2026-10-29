@@ -32,6 +32,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
         Language::Cpp => (c_functions(&extern_c_items(source)), c_type, String::new()),
         Language::Nim => (nim_functions(source), nim_type, String::new()),
         Language::Rust => (rust_functions(source), rust_type, String::new()),
+        Language::Zig => (zig_functions(source), zig_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -621,6 +622,94 @@ fn rust_pointee(ty: &str) -> Option<String> {
     rust_type(ty)
 }
 
+// ── Zig ────────────────────────────────────────────────────────────────────
+
+/// `export fn name(a: c_int) c_int {` (optionally `pub`, optionally `callconv(.c)`). Zig's own
+/// `-femit-h` is accepted but writes nothing in current releases, so the source is read instead.
+fn zig_functions(source: &str) -> Vec<ForeignFn> {
+    let text = strip_c_comments(source);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let trimmed = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+        let Some(rest) = trimmed.strip_prefix("export fn ") else {
+            continue;
+        };
+        let name_end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let signature = signature_text(&lines, index, '{');
+        let Some((params, after)) = parenthesized(&signature) else {
+            continue;
+        };
+        let Some(params) = named_params(params, &[], ":") else {
+            continue;
+        };
+        let mut ret = after.trim().to_string();
+        if let Some(at) = ret.find("callconv(") {
+            let end = ret[at..]
+                .find(')')
+                .map_or(ret.len(), |close| at + close + 1);
+            ret.replace_range(at..end, "");
+        }
+        let ret = ret.trim().to_string();
+        out.push(ForeignFn {
+            symbol: rest[..name_end].to_string(),
+            params,
+            ret: (!ret.is_empty() && ret != "void").then_some(ret),
+        });
+    }
+    out
+}
+
+fn zig_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    let ty = ty.strip_prefix('?').unwrap_or(ty);
+    for prefix in ["[*c]", "[*]", "*"] {
+        if let Some(rest) = ty.strip_prefix(prefix) {
+            let rest = rest.trim_start();
+            let (is_const, pointee) = match rest.strip_prefix("const ") {
+                Some(pointee) => (true, pointee),
+                None => (false, rest),
+            };
+            let pointee = match pointee.trim() {
+                "anyopaque" => "void".to_string(),
+                other => zig_type(other)?,
+            };
+            return Some(pointer_to(&pointee, is_const));
+        }
+    }
+    Some(
+        match ty {
+            "c_char" => "char",
+            "c_short" => "short",
+            "c_ushort" => "unsigned short",
+            "c_int" => "int",
+            "c_uint" => "unsigned int",
+            "c_long" => "long",
+            "c_ulong" => "unsigned long",
+            "c_longlong" => "long long",
+            "c_ulonglong" => "unsigned long long",
+            "i8" => "int8_t",
+            "i16" => "int16_t",
+            "i32" => "int32_t",
+            "i64" => "int64_t",
+            "u8" => "uint8_t",
+            "u16" => "uint16_t",
+            "u32" => "uint32_t",
+            "u64" => "uint64_t",
+            "isize" => "intptr_t",
+            "usize" => "size_t",
+            "f32" => "float",
+            "f64" => "double",
+            "bool" => "bool",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,5 +875,33 @@ pub extern "C" fn takes_string(s: String) {}
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("takes_string")));
+    }
+
+    #[test]
+    fn zig_header_maps_export_fns() {
+        let source = r#"
+fn helper(a: i32) i32 { return a; }
+pub fn not_exported(a: i32) i32 { return a; }
+export fn zadd(a: c_int, b: c_int) c_int { return a + b; }
+pub export fn zfill(
+    buf: [*]u8,
+    len: usize,
+    ctx: ?*anyopaque,
+) callconv(.c) void {}
+export fn zname(s: [*c]const u8) bool { return s != null; }
+export fn zslice(s: []const u8) usize { return s.len; }
+"#;
+        let out = synthesize(Language::Zig, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int zadd(int a, int b);"), "{h}");
+        assert!(
+            h.contains("void zfill(uint8_t * buf, size_t len, void * ctx);"),
+            "{h}"
+        );
+        assert!(h.contains("bool zname(const uint8_t * s);"), "{h}");
+        for absent in ["helper", "not_exported", "zslice("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("zslice")));
     }
 }

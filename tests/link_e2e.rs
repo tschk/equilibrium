@@ -182,3 +182,18 @@ fn rust_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn zig_source_without_a_header_links_through_load() {
+    if find_compiler(Language::Zig).is_none() {
+        eprintln!("skipping: zig not installed");
+        return;
+    }
+    build_and_run(
+        "zmath",
+        "zig",
+        "fn twice(v: c_int) c_int { return v * 2; }\n\
+         export fn zmath_add(a: c_int, b: c_int) c_int { return @divTrunc(twice(a + b), 2); }\n",
+        None,
+    );
+}
