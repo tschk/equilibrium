@@ -152,3 +152,18 @@ fn d_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn nim_source_without_a_header_links_through_load() {
+    if find_compiler(Language::Nim).is_none() {
+        eprintln!("skipping: nim not installed");
+        return;
+    }
+    build_and_run(
+        "nimgen",
+        "nim",
+        "proc twice(v: cint): cint = v * 2\n\
+         proc nimgen_add*(a, b: cint): cint {.exportc, cdecl.} = twice(a + b) div 2\n",
+        None,
+    );
+}

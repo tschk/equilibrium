@@ -141,7 +141,7 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 | **D** | `ldc2`/`dmd`/`gdc` | object, linked | **generated** from the compiler's `-HC` header for `extern(C)` functions and structs (`ldc2`/`dmd`; `gdc` has no `-HC`, so it needs `<stem>.h`) |
 | **Odin** | `odin` | object (`-build-mode:obj`), linked | sibling `<stem>.h` |
 | **Hare** | `hare` | object (QBE, Linux only), linked | sibling `<stem>.h` |
-| **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | sibling `<stem>.h` |
+| **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | **synthesized** from `{.exportc.}` procs (C-compatible types: `cint`…, `intN`/`uintN`, floats, `bool`, `pointer`, `cstring`, `ptr T`, `var T`) |
 | **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed, else sibling `<stem>.h` |
 | **TypeScript/JavaScript** | `scriptc` | `lib<stem>.a` (library mode), linked | generated from `export function`s |
 | **V (Vlang)** | `v` | `-backend c` C source; **not linked** (it is a whole program, not a library) | sibling `<stem>.h` |

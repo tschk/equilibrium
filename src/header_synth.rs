@@ -3,7 +3,7 @@
 //! functions and a type map from its spelling of a type to a C type; this module does the rest
 //! (grouped parameters, pointers, rendering, and reporting what could not be mapped).
 
-use crate::c_header::{parse_function_line, strip_c_comments};
+use crate::c_header::{parse_function_line, split_top_level_commas, strip_c_comments};
 use crate::detector::Language;
 
 /// An exported function as the source language spells it.
@@ -30,6 +30,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
     let (functions, map, prelude): (Vec<ForeignFn>, TypeMap, String) = match language {
         Language::C => (c_functions(source), c_type, c_type_declarations(source)),
         Language::Cpp => (c_functions(&extern_c_items(source)), c_type, String::new()),
+        Language::Nim => (nim_functions(source), nim_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -91,6 +92,36 @@ fn render(
 
 fn unmapped(language: Language, symbol: &str, what: &str, ty: &str) -> String {
     format!("Skipped export {symbol}: {language:?} {what} type `{ty}` has no C equivalent")
+}
+
+/// Resolve grouped parameters (`a, b: cint` in Nim/Odin, `a, b int` in V): a name without its own
+/// type takes the type of the next parameter that has one.
+pub(crate) fn resolve_grouped(
+    items: Vec<(String, Option<String>)>,
+) -> Option<Vec<(String, String)>> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut pending = Vec::new();
+    for (name, ty) in items {
+        match ty {
+            None => pending.push(name),
+            Some(ty) => {
+                for name in pending.drain(..) {
+                    out.push((name, ty.clone()));
+                }
+                out.push((name, ty));
+            }
+        }
+    }
+    pending.is_empty().then_some(out)
+}
+
+/// `T *` / `const T *` for a pointee already mapped to C.
+pub(crate) fn pointer_to(pointee: &str, is_const: bool) -> String {
+    if is_const {
+        format!("const {pointee} *")
+    } else {
+        format!("{pointee} *")
+    }
 }
 
 // ── C ──────────────────────────────────────────────────────────────────────
@@ -316,6 +347,153 @@ pub(crate) fn d_header_from_hc(hc: &str) -> Option<String> {
     ))
 }
 
+/// Collect a declaration that starts at `lines[start]` and may continue over following lines,
+/// until `stop` is seen outside brackets. Returns the text before `stop`.
+fn signature_text(lines: &[&str], start: usize, stop: char) -> String {
+    let mut depth = 0i32;
+    let mut text = String::new();
+    for line in &lines[start..] {
+        for ch in line.chars() {
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                c if c == stop && depth == 0 => return text,
+                _ => {}
+            }
+            text.push(ch);
+        }
+        text.push(' ');
+    }
+    text
+}
+
+/// `name: type` items (or bare names, for grouped parameters) separated by `separators`.
+fn named_params(list: &str, separators: &[char], sep: &str) -> Option<Vec<(String, String)>> {
+    let mut items = Vec::new();
+    for group in split_top_level_commas(&list.replace(separators, ",")) {
+        let group = group.trim();
+        if group.is_empty() {
+            continue;
+        }
+        let group = group.split_once('=').map_or(group, |(head, _)| head).trim();
+        match group.split_once(sep) {
+            Some((name, ty)) => items.push((name.trim().to_string(), Some(ty.trim().to_string()))),
+            None => items.push((group.to_string(), None)),
+        }
+    }
+    resolve_grouped(items)
+}
+
+/// Text between the first `(` and its matching `)`, and what follows it.
+fn parenthesized(text: &str) -> Option<(&str, &str)> {
+    let open = text.find('(')?;
+    let mut depth = 0usize;
+    for (index, ch) in text[open..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    let close = open + index;
+                    return Some((&text[open + 1..close], &text[close + 1..]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+// ── Nim ────────────────────────────────────────────────────────────────────
+
+/// `proc name*(a, b: cint): cint {.exportc, cdecl.} =` — only `exportc` procs have an unmangled
+/// symbol; `exportc: "other"` renames it.
+fn nim_functions(source: &str) -> Vec<ForeignFn> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut out = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed
+            .strip_prefix("proc ")
+            .or_else(|| trimmed.strip_prefix("func "))
+        else {
+            continue;
+        };
+        let text = signature_text(&lines, index, '=');
+        let Some(pragma) = text.find("{.").map(|at| &text[at..]) else {
+            continue;
+        };
+        if !pragma.contains("exportc") {
+            continue;
+        }
+        let name_end = rest
+            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let symbol = pragma
+            .split_once("exportc")
+            .and_then(|(_, after)| after.trim_start().strip_prefix(':'))
+            .and_then(|after| after.split('"').nth(1))
+            .map_or_else(|| rest[..name_end].to_string(), str::to_string);
+        let Some((params, after)) = parenthesized(&text) else {
+            continue;
+        };
+        let ret = after
+            .split("{.")
+            .next()
+            .and_then(|head| head.trim().strip_prefix(':'))
+            .map(|ty| ty.trim().to_string())
+            .filter(|ty| !ty.is_empty() && ty != "void");
+        if let Some(params) = named_params(params, &[';'], ":") {
+            out.push(ForeignFn {
+                symbol,
+                params,
+                ret,
+            });
+        }
+    }
+    out
+}
+
+fn nim_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix("ptr ").or_else(|| ty.strip_prefix("var ")) {
+        return nim_type(inner).map(|c| pointer_to(&c, false));
+    }
+    Some(
+        match ty {
+            "cint" => "int",
+            "cuint" => "unsigned int",
+            "clong" => "long",
+            "culong" => "unsigned long",
+            "clonglong" => "long long",
+            "culonglong" => "unsigned long long",
+            "cshort" => "short",
+            "cushort" => "unsigned short",
+            "cchar" | "char" => "char",
+            "cschar" => "signed char",
+            "cuchar" | "byte" => "unsigned char",
+            "cfloat" | "float32" => "float",
+            "cdouble" | "float64" | "float" => "double",
+            "csize_t" => "size_t",
+            "int8" => "int8_t",
+            "int16" => "int16_t",
+            "int32" => "int32_t",
+            "int64" => "int64_t",
+            "uint8" => "uint8_t",
+            "uint16" => "uint16_t",
+            "uint32" => "uint32_t",
+            "uint64" => "uint64_t",
+            "int" => "intptr_t",
+            "uint" => "uintptr_t",
+            "bool" => "bool",
+            "pointer" => "void *",
+            "cstring" => "char *",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +571,54 @@ extern "C" {
         for absent in ["mangled", "hidden", "Counter", "#include <string>"] {
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
+    }
+
+    #[test]
+    fn grouped_parameters_take_the_following_type() {
+        let resolved = resolve_grouped(vec![
+            ("a".into(), None),
+            ("b".into(), Some("cint".into())),
+            ("c".into(), Some("float".into())),
+        ])
+        .unwrap();
+        assert_eq!(
+            resolved,
+            vec![
+                ("a".to_string(), "cint".to_string()),
+                ("b".to_string(), "cint".to_string()),
+                ("c".to_string(), "float".to_string())
+            ]
+        );
+        assert!(resolve_grouped(vec![("a".into(), None)]).is_none());
+    }
+
+    #[test]
+    fn nim_header_maps_exportc_procs() {
+        let source = r#"
+proc helper(a: cint): cint = a
+proc nadd*(a, b: cint): cint {.exportc, cdecl.} =
+  a + b
+proc renamed*(buf: ptr uint8; n: csize_t;
+              scale: float): float64 {.exportc: "nim_scale", cdecl.} = 0.0
+proc touch*(v: var cint) {.exportc.} = v = 1
+proc bad*(s: string): cint {.exportc.} = 0
+"#;
+        let out = synthesize(Language::Nim, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int nadd(int a, int b);"), "{h}");
+        assert!(
+            h.contains("double nim_scale(uint8_t * buf, size_t n, double scale);"),
+            "{h}"
+        );
+        assert!(h.contains("void touch(int * v);"), "{h}");
+        assert!(!h.contains("helper"), "{h}");
+        assert!(!h.contains("bad("), "{h}");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|w| w.contains("bad") && w.contains("`string`")),
+            "{:?}",
+            out.warnings
+        );
     }
 }
