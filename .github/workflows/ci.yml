@@ -100,10 +100,20 @@ jobs:
         token: ${{ secrets.GITHUB_TOKEN }}
         release: latest
 
+    # The prebuilt release, not vlang/setup-v: that action builds V from source, and its `make`
+    # step failed on both runners.
     - name: Install V
-      uses: vlang/setup-v@v1.7
-      with:
-        stable: true
+      run: |
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) asset=v_linux.zip ;;
+          macOS-ARM64) asset=v_macos_arm64.zip ;;
+          macOS-X64) asset=v_macos_x86_64.zip ;;
+          *) echo "no prebuilt V for $RUNNER_OS-$RUNNER_ARCH"; exit 1 ;;
+        esac
+        curl -fsSL -o "$RUNNER_TEMP/v.zip" "https://github.com/vlang/v/releases/download/0.5.2/$asset"
+        unzip -q "$RUNNER_TEMP/v.zip" -d "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/v/v" version
 
     - name: Run tests with multiple compilers
       run: cargo test --all-features
