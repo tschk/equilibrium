@@ -191,6 +191,9 @@ fn main() {
     // module is built as a shared library (`v -shared -gc none`, non-main
     // module) and linked as a dylib with an rpath to where it was built.
     let unix = std::env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| f == "unix");
+    // `v -shared` has no target flag here, so it builds for the host; skip it when cross-compiling
+    // rather than emit a host-architecture library the target linker would reject.
+    let host_is_target = std::env::var("HOST").ok() == std::env::var("TARGET").ok();
     if let Some(v) = find_bin(
         "v",
         &[
@@ -199,7 +202,7 @@ fn main() {
             "/opt/homebrew/bin/v",
         ],
     )
-    .filter(|_| unix)
+    .filter(|_| unix && host_is_target)
     {
         let lib_dir = out_dir.join("v_lib");
         std::fs::create_dir_all(&lib_dir).expect("create V output dir");
