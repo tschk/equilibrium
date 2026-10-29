@@ -20,7 +20,7 @@
 //! | V (Vlang) | `v` | `v -shared -gc none` shared library |
 //! | Zig | `zig` | `zig build-obj -femit-asm` or C export |
 //! | C/C++ | `clang`/`gcc` | Native |
-//! | C# | — | Consumer only (P/Invoke imports); C# sources are refused, Native AOT is not implemented |
+//! | C# | `dotnet` | Native AOT shared library (`PublishAot`, `NativeLib=Shared`); also a P/Invoke consumer |
 //! | Rust | `rustc` | cbindgen |
 //! | TypeScript/JavaScript | `scriptc` | `scriptc build --lib --profile` static archive |
 

@@ -80,7 +80,13 @@ fn main() {{
 
     // Share one target dir across runs so the equilibrium-ffi build dependency is reused.
     let target = repo.join("target").join("link-e2e");
-    let output = Command::new(env!("CARGO"))
+    let mut command = Command::new(env!("CARGO"));
+    // C# Native AOT downloads the ILCompiler packs once; keep them inside this repo's target dir
+    // unless the caller already chose a NuGet cache.
+    if std::env::var_os("NUGET_PACKAGES").is_none() {
+        command.env("NUGET_PACKAGES", repo.join("target").join("nuget"));
+    }
+    let output = command
         .args(["run", "--quiet", "-j2"])
         .current_dir(root)
         .env("CARGO_TARGET_DIR", &target)
@@ -247,6 +253,24 @@ fn hare_source_without_a_header_links_through_load() {
         "hmath",
         "ha",
         "fn twice(v: int) int = v * 2;\n\nexport fn hmath_add(a: int, b: int) int = twice(a + b) / 2;\n",
+        None,
+    );
+}
+
+#[test]
+fn csharp_native_aot_source_without_a_header_links_through_load() {
+    if !available(Language::CSharp) {
+        return;
+    }
+    build_and_run(
+        "csmath",
+        "cs",
+        "using System.Runtime.InteropServices;\n\
+         public static class CsMath {\n\
+             static int Twice(int v) => v * 2;\n\
+             [UnmanagedCallersOnly(EntryPoint = \"csmath_add\")]\n\
+             public static int Add(int a, int b) => Twice(a + b) / 2;\n\
+         }\n",
         None,
     );
 }

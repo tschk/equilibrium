@@ -151,12 +151,30 @@ jobs:
         echo "$HOME/hare-toolchain/bin" >> "$GITHUB_PATH"
         "$HOME/hare-toolchain/bin/hare" version
 
+    - name: Install .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+
+    # Native AOT links with clang and needs zlib on Linux.
+    - name: Install Native AOT prerequisites (Ubuntu)
+      if: runner.os == 'Linux'
+      run: sudo apt-get install -y clang zlib1g-dev
+
+    - name: Cache NuGet packages
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/nuget-packages
+        key: nuget-${{ runner.os }}-${{ runner.arch }}-dotnet-8
+
     - name: Run tests with multiple compilers
       run: cargo test --all-features
       env:
+        NUGET_PACKAGES: ${{ runner.temp }}/nuget-packages
         # Fail, rather than skip and report `ok`, if an installed-above compiler is missing.
         # Hare is Linux-only, so it is required only there.
-        EQ_REQUIRE_COMPILERS: zig,nim,d,odin,v${{ runner.os == 'Linux' && ',hare' || '' }}
+        EQ_REQUIRE_COMPILERS: zig,nim,d,odin,v,csharp${{ runner.os == 'Linux' && ',hare' || '' }}
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1'
 
   docs:
     name: Documentation

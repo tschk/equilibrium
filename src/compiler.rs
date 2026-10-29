@@ -38,15 +38,6 @@ impl std::fmt::Display for CompileError {
                 write!(f, "Compilation failed (exit {:?}): {}", exit_code, stderr)
             }
             CompileError::Io(e) => write!(f, "IO error: {}", e),
-            CompileError::UnsupportedCOutput {
-                language: Language::CSharp,
-            } => write!(
-                f,
-                "C# sources cannot be loaded: csc produces a managed .NET assembly, not a C ABI \
-                 library, and Native AOT publishing is not implemented. Build a native library \
-                 with `dotnet publish -p:PublishAot=true` yourself, or use C# as a consumer \
-                 (P/Invoke imports via `--consumer csharp`)"
-            ),
             CompileError::UnsupportedCOutput { language } => {
                 write!(f, "{:?} doesn't support direct C output", language)
             }
@@ -188,9 +179,6 @@ fn compile_inner(
     language: Language,
     options: &CompileOptions,
 ) -> Result<CompileResult, CompileError> {
-    if language == Language::CSharp {
-        return Err(CompileError::UnsupportedCOutput { language });
-    }
     if !input.is_file() {
         return Err(CompileError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -245,13 +233,25 @@ fn compile_inner(
     let input_str = input.to_string_lossy();
     let output_str = c_output.to_string_lossy();
 
-    let mut args = language.to_c_args(&input_str, &output_str);
+    let mut args = if language == Language::CSharp {
+        let project = write_csharp_aot_project(&input, &output_dir, stem)?;
+        csharp_publish_args(&project, &output_dir)
+    } else {
+        language.to_c_args(&input_str, &output_str)
+    };
     args.extend(options.compile_args.iter().cloned());
 
     let mut command = Command::new(&compiler);
     command
         .args(&args)
         .current_dir(input.parent().unwrap_or(Path::new(".")));
+    if language == Language::CSharp {
+        // No telemetry, banner or first-run setup from the .NET CLI.
+        command
+            .env("DOTNET_CLI_TELEMETRY_OPTOUT", "1")
+            .env("DOTNET_NOLOGO", "1")
+            .env("DOTNET_SKIP_FIRST_TIME_EXPERIENCE", "1");
+    }
     if language == Language::ScriptC {
         crate::scriptc::configure_command(&mut command);
     }
@@ -309,6 +309,104 @@ fn compile_inner(
     })
 }
 
+/// Write the project `dotnet publish` needs to build `input` as a Native AOT shared library:
+/// `PublishAot` with `NativeLib=Shared`, compiling only `input`, named so the library comes out as
+/// `lib<stem>.dylib`/`.so` (`<stem>.dll` on Windows). `[UnmanagedCallersOnly(EntryPoint = …)]`
+/// methods are its exports.
+fn write_csharp_aot_project(
+    input: &Path,
+    output_dir: &Path,
+    stem: &str,
+) -> Result<PathBuf, CompileError> {
+    let framework = dotnet_target_framework()?;
+    let assembly = if cfg!(windows) {
+        stem.to_string()
+    } else {
+        format!("lib{stem}")
+    };
+    let project_dir = output_dir.join(format!("{stem}.csproj.d"));
+    std::fs::create_dir_all(&project_dir)?;
+    let project = project_dir.join(format!("{stem}.csproj"));
+    let escape = |text: &str| {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    std::fs::write(
+        &project,
+        format!(
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>{framework}</TargetFramework>
+    <OutputType>Library</OutputType>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <AssemblyName>{assembly}</AssemblyName>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- Native symbol stripping runs `strip`/`dsymutil`; a GNU strip first on PATH breaks it on macOS. -->
+    <StripSymbols>false</StripSymbols>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="{}" />
+    <!-- ILC's default macOS install name is the relative publish path, which dyld can't find. -->
+    <LinkerArg Condition="$([MSBuild]::IsOSPlatform('OSX'))" Include="-Wl,-install_name,@rpath/{assembly}.dylib" />
+  </ItemGroup>
+</Project>
+"#,
+            escape(&input.to_string_lossy())
+        ),
+    )?;
+    Ok(project)
+}
+
+/// `net<major>.0` for the newest installed .NET SDK.
+fn dotnet_target_framework() -> Result<String, CompileError> {
+    let output = Command::new("dotnet").arg("--version").output()?;
+    let version = String::from_utf8_lossy(&output.stdout);
+    let major = version
+        .trim()
+        .split('.')
+        .next()
+        .filter(|major| output.status.success() && major.parse::<u32>().is_ok_and(|m| m >= 7))
+        .ok_or_else(|| CompileError::CompilationFailed {
+            stderr: format!(
+                "C# Native AOT needs the .NET 7+ SDK; `dotnet --version` printed {:?}",
+                version.trim()
+            ),
+            exit_code: output.status.code(),
+        })?;
+    Ok(format!("net{major}.0"))
+}
+
+fn csharp_publish_args(project: &Path, output_dir: &Path) -> Vec<String> {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        "x64"
+    };
+    let os = if cfg!(target_os = "macos") {
+        "osx"
+    } else if cfg!(windows) {
+        "win"
+    } else {
+        "linux"
+    };
+    vec![
+        "publish".to_string(),
+        project.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        "Release".to_string(),
+        "-r".to_string(),
+        format!("{os}-{arch}"),
+        "-o".to_string(),
+        output_dir.to_string_lossy().into_owned(),
+        "--nologo".to_string(),
+    ]
+}
+
 /// Nim and Odin archive static libraries with whatever `ar` is first on `PATH`. On macOS a
 /// Homebrew GNU binutils `ar` there writes archives Apple's linker rejects ("member not 8-byte
 /// aligned"), so they get a private `PATH` entry whose `ar` is the system one.
@@ -349,9 +447,7 @@ fn artifact_filename(language: Language, stem: &str) -> String {
         // scriptc's own name is `<stem>.lib.a`; the `lib` prefix keeps rustc's
         // `-l` lookup (`cargo:rustc-link-lib=static=…`) working.
         Language::ScriptC => format!("lib{stem}.a"),
-        // Unreachable through `compile_inner`, which refuses C# producers.
-        Language::CSharp => format!("{stem}.dll"),
-        Language::Rust | Language::V => {
+        Language::Rust | Language::V | Language::CSharp => {
             if cfg!(target_os = "windows") {
                 format!("{stem}.dll")
             } else if cfg!(target_os = "macos") {
@@ -685,31 +781,6 @@ mod tests {
         let result = compile_to_c(&c_file, &output_dir).unwrap();
         assert!(result.output_path.exists());
         assert_eq!(result.language, Language::C);
-    }
-
-    #[test]
-    fn csharp_sources_are_refused_instead_of_compiled_to_a_managed_dll() {
-        // csc emits a managed assembly, which cannot be linked as a C ABI library; refusing it up
-        // front (whatever C# toolchain is installed) beats a confusing compile or link failure.
-        let dir = tempdir().unwrap();
-        let source = dir.path().join("Lib.cs");
-        std::fs::write(
-            &source,
-            "public static class Lib { public static int Add(int a, int b) => a + b; }\n",
-        )
-        .unwrap();
-
-        let error = compile_to_c(&source, &dir.path().join("out")).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                CompileError::UnsupportedCOutput {
-                    language: Language::CSharp
-                }
-            ),
-            "{error}"
-        );
-        assert!(error.to_string().contains("Native AOT"), "{error}");
     }
 
     #[test]
