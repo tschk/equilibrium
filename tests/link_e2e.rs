@@ -13,6 +13,23 @@ fn write(path: &Path, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
+/// Whether `language`'s compiler is installed. A missing compiler skips the test, unless CI lists
+/// the language in `EQ_REQUIRE_COMPILERS` (comma-separated, e.g. `zig,nim,d`): there a skip would
+/// report `ok` for a test that never ran, so it fails instead.
+fn available(language: Language) -> bool {
+    if find_compiler(language).is_some() {
+        return true;
+    }
+    let name = language.cli_name();
+    let required = std::env::var("EQ_REQUIRE_COMPILERS").unwrap_or_default();
+    assert!(
+        !required.split(',').any(|item| item.trim() == name),
+        "{name} is listed in EQ_REQUIRE_COMPILERS but its compiler was not found"
+    );
+    eprintln!("skipping: {name} compiler not installed");
+    false
+}
+
 /// Build and run a crate whose `build.rs` loads `source` and whose `main.rs` prints
 /// `add(20, 22)` through the generated bindings. With `header: None` there is no hand-written
 /// header, so the bindings must come from one equilibrium synthesizes.
@@ -79,8 +96,7 @@ fn main() {{
 
 #[test]
 fn nim_static_library_links_through_load() {
-    if find_compiler(Language::Nim).is_none() {
-        eprintln!("skipping: nim not installed");
+    if !available(Language::Nim) {
         return;
     }
     build_and_run(
@@ -93,8 +109,7 @@ fn nim_static_library_links_through_load() {
 
 #[test]
 fn rust_library_links_through_load() {
-    if find_compiler(Language::Rust).is_none() {
-        eprintln!("skipping: rustc not installed");
+    if !available(Language::Rust) {
         return;
     }
     build_and_run(
@@ -107,8 +122,7 @@ fn rust_library_links_through_load() {
 
 #[test]
 fn c_source_without_a_header_links_through_load() {
-    if find_compiler(Language::C).is_none() {
-        eprintln!("skipping: no C compiler");
+    if !available(Language::C) {
         return;
     }
     build_and_run(
@@ -121,8 +135,7 @@ fn c_source_without_a_header_links_through_load() {
 
 #[test]
 fn cpp_source_without_a_header_links_through_load() {
-    if find_compiler(Language::Cpp).is_none() {
-        eprintln!("skipping: no C++ compiler");
+    if !available(Language::Cpp) {
         return;
     }
     build_and_run(
@@ -136,10 +149,10 @@ fn cpp_source_without_a_header_links_through_load() {
 
 #[test]
 fn d_source_without_a_header_links_through_load() {
-    let Some(info) = find_compiler(Language::D) else {
-        eprintln!("skipping: no D compiler");
+    if !available(Language::D) {
         return;
-    };
+    }
+    let info = find_compiler(Language::D).unwrap();
     if info.compiler.as_deref() == Some("gdc") {
         eprintln!("skipping: gdc has no -HC header output");
         return;
@@ -155,8 +168,7 @@ fn d_source_without_a_header_links_through_load() {
 
 #[test]
 fn nim_source_without_a_header_links_through_load() {
-    if find_compiler(Language::Nim).is_none() {
-        eprintln!("skipping: nim not installed");
+    if !available(Language::Nim) {
         return;
     }
     build_and_run(
@@ -170,8 +182,7 @@ fn nim_source_without_a_header_links_through_load() {
 
 #[test]
 fn rust_source_without_a_header_links_through_load() {
-    if find_compiler(Language::Rust).is_none() {
-        eprintln!("skipping: rustc not installed");
+    if !available(Language::Rust) {
         return;
     }
     build_and_run(
@@ -185,8 +196,7 @@ fn rust_source_without_a_header_links_through_load() {
 
 #[test]
 fn zig_source_without_a_header_links_through_load() {
-    if find_compiler(Language::Zig).is_none() {
-        eprintln!("skipping: zig not installed");
+    if !available(Language::Zig) {
         return;
     }
     build_and_run(
@@ -200,8 +210,7 @@ fn zig_source_without_a_header_links_through_load() {
 
 #[test]
 fn odin_source_without_a_header_links_through_load() {
-    if find_compiler(Language::Odin).is_none() {
-        eprintln!("skipping: odin not installed");
+    if !available(Language::Odin) {
         return;
     }
     build_and_run(
@@ -216,8 +225,7 @@ fn odin_source_without_a_header_links_through_load() {
 
 #[test]
 fn v_source_without_a_header_links_through_load() {
-    if find_compiler(Language::V).is_none() {
-        eprintln!("skipping: v not installed");
+    if !available(Language::V) {
         return;
     }
     build_and_run(

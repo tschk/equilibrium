@@ -91,6 +91,9 @@ jobs:
 
     - name: Run tests with multiple compilers
       run: cargo test --all-features
+      env:
+        # Fail, rather than skip and report `ok`, if an installed-above compiler is missing.
+        EQ_REQUIRE_COMPILERS: zig,nim,d
 
   docs:
     name: Documentation
