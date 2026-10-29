@@ -135,7 +135,7 @@ pub fn generate_imports_from_parsed(
 
     let declared_types = declared_import_types(parsed, language);
     let mut functions = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = parsed.skipped.clone();
 
     if maps_declared_types(language) {
         let names = parsed
@@ -482,7 +482,7 @@ fn generate_scriptc_imports(
     options: &ImportOptions,
 ) -> Result<GeneratedImport, String> {
     let mut bindings = Vec::new();
-    let mut warnings = Vec::new();
+    let mut warnings = parsed.skipped.clone();
 
     for function in &parsed.functions {
         if !options.allowlist_functions.is_empty()

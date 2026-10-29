@@ -38,6 +38,15 @@ impl std::fmt::Display for CompileError {
                 write!(f, "Compilation failed (exit {:?}): {}", exit_code, stderr)
             }
             CompileError::Io(e) => write!(f, "IO error: {}", e),
+            CompileError::UnsupportedCOutput {
+                language: Language::CSharp,
+            } => write!(
+                f,
+                "C# sources cannot be loaded: csc produces a managed .NET assembly, not a C ABI \
+                 library, and Native AOT publishing is not implemented. Build a native library \
+                 with `dotnet publish -p:PublishAot=true` yourself, or use C# as a consumer \
+                 (P/Invoke imports via `--consumer csharp`)"
+            ),
             CompileError::UnsupportedCOutput { language } => {
                 write!(f, "{:?} doesn't support direct C output", language)
             }
@@ -177,6 +186,9 @@ fn compile_inner(
     language: Language,
     options: &CompileOptions,
 ) -> Result<CompileResult, CompileError> {
+    if language == Language::CSharp {
+        return Err(CompileError::UnsupportedCOutput { language });
+    }
     if !input.is_file() {
         return Err(CompileError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -241,6 +253,9 @@ fn compile_inner(
     if language == Language::ScriptC {
         crate::scriptc::configure_command(&mut command);
     }
+    if language == Language::Nim {
+        prefer_system_archiver(&mut command, &output_dir)?;
+    }
     let output = command.output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -289,6 +304,29 @@ fn compile_inner(
     })
 }
 
+/// Nim archives `--app:staticlib` output with whatever `ar` is first on `PATH`. On macOS a
+/// Homebrew GNU binutils `ar` there writes archives Apple's linker rejects ("member not 8-byte
+/// aligned"), so Nim gets a private `PATH` entry whose `ar` is the system one.
+fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::Result<()> {
+    let system_ar = Path::new("/usr/bin/ar");
+    if !cfg!(target_os = "macos") || !system_ar.is_file() {
+        return Ok(());
+    }
+    let tools = output_dir.join(".eq-tools");
+    std::fs::create_dir_all(&tools)?;
+    let link = tools.join("ar");
+    if std::fs::read_link(&link).ok().as_deref() != Some(system_ar) {
+        let _ = std::fs::remove_file(&link);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(system_ar, &link)?;
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let joined = std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(&path)))
+        .map_err(std::io::Error::other)?;
+    command.env("PATH", joined);
+    Ok(())
+}
+
 fn artifact_filename(language: Language, stem: &str) -> String {
     match language {
         Language::C
@@ -298,18 +336,21 @@ fn artifact_filename(language: Language, stem: &str) -> String {
         | Language::Odin
         | Language::Hare => format!("{stem}.o"),
         Language::V => format!("{stem}.c"),
-        Language::Nim => format!("{stem}.a"),
+        // rustc's `-l static=<name>` / `-l dylib=<name>` only finds `lib<name>.<ext>` on Unix, so
+        // archives and shared libraries carry the `lib` prefix `emit_cargo_link` strips again.
+        Language::Nim => format!("lib{stem}.a"),
         // scriptc's own name is `<stem>.lib.a`; the `lib` prefix keeps rustc's
         // `-l` lookup (`cargo:rustc-link-lib=static=…`) working.
         Language::ScriptC => format!("lib{stem}.a"),
+        // Unreachable through `compile_inner`, which refuses C# producers.
         Language::CSharp => format!("{stem}.dll"),
         Language::Rust => {
             if cfg!(target_os = "windows") {
                 format!("{stem}.dll")
             } else if cfg!(target_os = "macos") {
-                format!("{stem}.dylib")
+                format!("lib{stem}.dylib")
             } else {
-                format!("{stem}.so")
+                format!("lib{stem}.so")
             }
         }
     }
@@ -602,6 +643,31 @@ mod tests {
         let result = compile_to_c(&c_file, &output_dir).unwrap();
         assert!(result.output_path.exists());
         assert_eq!(result.language, Language::C);
+    }
+
+    #[test]
+    fn csharp_sources_are_refused_instead_of_compiled_to_a_managed_dll() {
+        // csc emits a managed assembly, which cannot be linked as a C ABI library; refusing it up
+        // front (whatever C# toolchain is installed) beats a confusing compile or link failure.
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("Lib.cs");
+        std::fs::write(
+            &source,
+            "public static class Lib { public static int Add(int a, int b) => a + b; }\n",
+        )
+        .unwrap();
+
+        let error = compile_to_c(&source, &dir.path().join("out")).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                CompileError::UnsupportedCOutput {
+                    language: Language::CSharp
+                }
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("Native AOT"), "{error}");
     }
 
     #[test]

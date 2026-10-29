@@ -69,7 +69,7 @@ Language-specific ergonomic crates live in sibling directories:
 - `examples/demo-app/` — minimal end-to-end demo: `build.rs` compiles `math.c` via `cc` and generates bindings with equilibrium-ffi; `main.rs` calls C functions through the generated `include!()`d bindings
 - `examples/scriptc-app/` — the same end-to-end shape for TypeScript: `build.rs` calls `load_with_options()` on `foreign-code/math.ts`, which compiles a scriptc library archive and writes bindings for `main.rs`; `equilibrium.toml` supplies the target's marshalling classes
 - `examples/full-demo/` — full demo calling a C calculator library from Rust
-- `examples/polyglot-gui/` — interactive polyglot dashboard with a ratatui TUI (`polyglot-tui`) and a GPUI GUI (`polyglot-gui`). Calls live FFI into C, C++, Zig, Nim, V, D, Odin, Rust, and TypeScript (scriptc, via `load_with_options` in `build.rs` + `equilibrium.toml` class overrides). `build.rs` uses `find_bin()` with hardcoded linuxbrew fallbacks so compilers are found regardless of the shell PATH that cargo inherits.
+- `examples/polyglot-gui/` — interactive polyglot dashboard with a ratatui TUI (`polyglot-tui`) and a GPUI GUI (`polyglot-gui`). Calls live FFI into C, C++, Zig, Nim, V (real `v -shared` library, Unix only), D, Odin, Rust, and TypeScript (scriptc, via `load_with_options` in `build.rs` + `equilibrium.toml` class overrides). `build.rs` uses `find_bin()` with hardcoded linuxbrew fallbacks so compilers are found regardless of the shell PATH that cargo inherits.
 
 ### scriptc (TypeScript) FFI notes
 
@@ -98,9 +98,9 @@ Every symbol is prefixed with the sanitized module stem (`math.ts` → `math_add
 
 Zig objects must be compiled with `-fPIC -OReleaseFast` to link cleanly into Rust's PIE binary. `ReleaseFast` removes safety checks that otherwise pull in Zig's stdlib panic infrastructure, which conflicts with the linker. See `examples/polyglot-gui/build.rs`.
 
-### V FFI on Linux
+### V FFI
 
-V's runtime cannot link directly into Rust's PIE binary. The polyglot-gui uses a C shim (`v_module_shim.c`) that implements the same exported symbols with identical semantics.
+A `module main` V object drags V's runtime and `main` into Rust's link. The polyglot-gui builds `v_module.v` as a non-main module with `v -shared -gc none` and links the resulting `libv_module.{dylib,so}` with an rpath (Unix hosts only). `load()` on a `.v` file produces V's `-backend c` source and does not link it.
 
 ### Windows build notes
 
