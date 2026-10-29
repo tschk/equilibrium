@@ -882,7 +882,8 @@ pub(crate) fn c_type_to_rust_checked(c_type: &str) -> Result<String, String> {
 /// `struct node *` / `const union u *`: a pointer to a tagged type, bound as an opaque pointer.
 /// A tagged type by value is not accepted here; its layout is unknown to the mapping.
 fn is_tagged_pointer(c_type: &str) -> bool {
-    let Some(pointee) = c_type.strip_suffix('*') else {
+    let normalized = strip_ignored_qualifiers(c_type);
+    let Some(pointee) = normalized.trim().strip_suffix('*') else {
         return false;
     };
     let pointee = pointee.trim();

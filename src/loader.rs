@@ -424,6 +424,10 @@ fn emit_cargo_link(
                 // `-l dylib=<name>.dll` resolves. The DLL must sit beside the executable or on PATH.
                 println!("cargo:rustc-link-search=native={}", dir.display());
                 println!("cargo:rustc-link-lib=dylib={}", name.to_string_lossy());
+                warnings.push(format!(
+                    "{} must be copied beside the executable or put on PATH to run",
+                    output_path.display()
+                ));
             }
         }
         "c" => {

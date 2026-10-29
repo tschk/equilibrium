@@ -203,14 +203,18 @@ fn main() {
     {
         let lib_dir = out_dir.join("v_lib");
         std::fs::create_dir_all(&lib_dir).expect("create V output dir");
+        let macos = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos");
+        let lib = lib_dir.join(if macos {
+            "libv_module.dylib"
+        } else {
+            "libv_module.so"
+        });
         let status = Command::new(&v)
             .args(["-shared", "-gc", "none", "-o"])
-            .arg(lib_dir.join("libv_module"))
+            .arg(&lib)
             .arg(foreign.join("v_module.v"))
             .status();
-        let built = ["libv_module.dylib", "libv_module.so"]
-            .iter()
-            .any(|name| lib_dir.join(name).exists());
+        let built = lib.exists();
         if status.map(|s| s.success()).unwrap_or(false) && built {
             println!("cargo:rustc-link-search=native={}", lib_dir.display());
             println!("cargo:rustc-link-lib=dylib=v_module");

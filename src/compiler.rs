@@ -316,9 +316,13 @@ fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::
     std::fs::create_dir_all(&tools)?;
     let link = tools.join("ar");
     if std::fs::read_link(&link).ok().as_deref() != Some(system_ar) {
-        let _ = std::fs::remove_file(&link);
+        // Create under a per-process name and rename over the target: rename is atomic, so
+        // concurrent builds sharing an output dir never observe or race on a half-made link.
+        let staged = tools.join(format!("ar.{}", std::process::id()));
+        let _ = std::fs::remove_file(&staged);
         #[cfg(unix)]
-        std::os::unix::fs::symlink(system_ar, &link)?;
+        std::os::unix::fs::symlink(system_ar, &staged)?;
+        std::fs::rename(&staged, &link)?;
     }
     let path = std::env::var_os("PATH").unwrap_or_default();
     let joined = std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(&path)))
