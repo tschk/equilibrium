@@ -220,6 +220,7 @@ pub fn load_with_options<S: AsRef<Path>>(
             language: lang,
             stdout: String::new(),
             stderr: String::new(),
+            warnings: Vec::new(),
         }
     };
 
@@ -261,6 +262,7 @@ pub fn load_with_options<S: AsRef<Path>>(
         .native_libraries(import_libraries(&result));
     let mut imports = Vec::new();
     let mut warnings = export_discovery.warnings;
+    warnings.extend(result.warnings.iter().cloned());
     if options.generate_bindings && bindings.is_none() {
         warnings.push("no header found; bindings not generated".to_string());
     }
@@ -429,15 +431,6 @@ fn emit_cargo_link(
                     output_path.display()
                 ));
             }
-        }
-        "c" => {
-            // V's `-backend c` output is a whole program (runtime and `main`), not a library;
-            // handing it to the linker would compile a second `main` into the binary.
-            warnings.push(format!(
-                "{} is C source, not a linkable library; it was not linked",
-                output_path.display()
-            ));
-            return Ok(());
         }
         _ => {
             println!("cargo:rustc-link-arg={}", output_path.display());

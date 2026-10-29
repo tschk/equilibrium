@@ -17,7 +17,7 @@
 //!
 //! | Language | Compiler | C Backend |
 //! |----------|----------|-----------|
-//! | V (Vlang) | `v` | `v -o output.c -backend c` |
+//! | V (Vlang) | `v` | `v -shared -gc none` shared library |
 //! | Zig | `zig` | `zig build-obj -femit-asm` or C export |
 //! | C/C++ | `clang`/`gcc` | Native |
 //! | C# | — | Consumer only (P/Invoke imports); C# sources are refused, Native AOT is not implemented |
@@ -30,6 +30,7 @@ mod compiler;
 mod config;
 mod detector;
 mod exports;
+mod header_synth;
 mod imports;
 mod limits;
 mod loader;

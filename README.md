@@ -4,7 +4,7 @@
 
 [eq.tsc.hk](https://eq.tsc.hk) — project site, built with crepuscularity + moonshine and hosted on Cloudflare Pages.
 
-Equilibrium auto-detects source files in various programming languages, compiles them to a C-ABI artifact (object, archive or shared library), emits the link directives, and generates Rust bindings from a C header. Headers are generated for TypeScript (scriptc) and for Rust when `cbindgen` is installed; for the other languages you provide `<stem>.h` — see [Supported Languages](#supported-languages). Binding generation is available when you need it, but `load()` is the primary path. Generated consumer wrappers can target the same C ABI surface for other supported languages.
+Equilibrium auto-detects source files in various programming languages, compiles them to a C-ABI artifact (object, archive or shared library), emits the link directives, and generates Rust bindings from a C header. When the source has no hand-written `<stem>.h`, equilibrium synthesizes the header from the source's exported functions for the languages marked in [Supported Languages](#supported-languages); for the rest you provide it. Binding generation is available when you need it, but `load()` is the primary path. Generated consumer wrappers can target the same C ABI surface for other supported languages.
 
 ## `eq` CLI
 
@@ -131,20 +131,20 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 
 ## Supported Languages
 
-`load()` always compiles and (in a build script) emits the `cargo:rustc-link-*` directives for the artifact. **Rust bindings are generated only when there is a C header**: equilibrium generates one for scriptc, asks `cbindgen` for Rust when it is installed, and otherwise uses a hand-written `<stem>.h` beside the source. For every other language you write that header yourself; without it `load()` compiles and links but reports `no header found; bindings not generated`.
+`load()` always compiles and (in a build script) emits the `cargo:rustc-link-*` directives for the artifact. **Rust bindings come from a C header.** A hand-written `<stem>.h` beside the source always wins. Otherwise equilibrium synthesizes one from the source's exported functions where the last column says so; an export whose types have no C equivalent is left out and reported in `warnings`. With no header at all, `load()` compiles and links but reports `no header found; bindings not generated`.
 
 | Language | Compiler | Artifact / link | Header for bindings |
 |----------|----------|-----------------|---------------------|
-| **C** | `clang`/`gcc` | object, linked | sibling `<stem>.h` |
-| **C++** | `clang++`/`g++` | object, linked | sibling `<stem>.h` (`extern "C"` API) |
-| **Zig** | `zig` | object (`build-obj -OReleaseFast -fPIC`), linked | sibling `<stem>.h` |
-| **D** | `ldc2`/`dmd`/`gdc` | object, linked | sibling `<stem>.h` |
-| **Odin** | `odin` | object (`-build-mode:obj`), linked | sibling `<stem>.h` |
+| **C** | `clang`/`gcc` | object, linked | **synthesized** from non-`static` definitions, with the file's typedefs, aggregates, `#include <…>`s and constant `#define`s |
+| **C++** | `clang++`/`g++` | object, linked | **synthesized** from `extern "C"` definitions (single or `extern "C" { … }` blocks); signatures must use C types |
+| **Zig** | `zig` | object (`build-obj -OReleaseFast -fPIC`), linked | **synthesized** from `export fn`s (`c_int`…, `iN`/`uN`, `isize`/`usize`, floats, `bool`, `*T`/`[*]T`/`[*c]T`/`?*anyopaque`; slices are skipped). Zig's own `-femit-h` writes nothing in current releases |
+| **D** | `ldc2`/`dmd`/`gdc` | object, linked | **generated** from the compiler's `-HC` header for `extern(C)` functions and structs (`ldc2`/`dmd`; `gdc` has no `-HC`, so it needs `<stem>.h`) |
+| **Odin** | `odin` | `lib<stem>.a` (`-build-mode:static`), linked | **synthesized** from `@(export)` procs with the `"c"`/`"cdecl"` convention (`c.*` types, `iN`/`uN`, `int`/`uint`, floats, `bool`, `rawptr`, `cstring`, `^T`/`[^]T`; slices are skipped) |
 | **Hare** | `hare` | object (QBE, Linux only), linked | sibling `<stem>.h` |
-| **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | sibling `<stem>.h` |
-| **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed, else sibling `<stem>.h` |
+| **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | **synthesized** from `{.exportc.}` procs (C-compatible types: `cint`…, `intN`/`uintN`, floats, `bool`, `pointer`, `cstring`, `ptr T`, `var T`) |
+| **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed; otherwise **synthesized** from `#[no_mangle]`/`#[export_name]` `extern "C"` and `#[ffi]` functions with primitive and raw-pointer types |
 | **TypeScript/JavaScript** | `scriptc` | `lib<stem>.a` (library mode), linked | generated from `export function`s |
-| **V (Vlang)** | `v` | `-backend c` C source; **not linked** (it is a whole program, not a library) | sibling `<stem>.h` |
+| **V (Vlang)** | `v` | `lib<stem>.dylib`/`.so` (`v -shared -gc none`), linked with an rpath | **synthesized** from `@[export: 'name']` functions (`int`/`iN`/`uN`, `isize`/`usize`, floats, `bool`, `voidptr`, `charptr`, `&T`) |
 | **C#** | — | **not supported as a source**: `csc` makes a managed assembly and Native AOT is not implemented | — (C# works as a consumer: P/Invoke imports) |
 
 **Platforms.** The end-to-end link tests build a consumer crate whose `build.rs` calls `load()`, link it and run it. They run on **Linux and macOS** only. On **Windows**, CI runs the unit tests, but `load()`'s compile-and-link path is never exercised. For languages that produce a shared library, `load()` links against the import library, and **the `.dll` itself is the caller's responsibility to deploy**: copy it beside the executable or put its directory on `PATH`. `load()` does not copy it. Instead it adds a warning to `LoadedModule::warnings` saying where the DLL is.

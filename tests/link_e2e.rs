@@ -13,9 +13,27 @@ fn write(path: &Path, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
-/// Build and run a crate whose `build.rs` loads `source` (with a sibling `header`) and whose
-/// `main.rs` prints `add(20, 22)` through the generated bindings.
-fn build_and_run(stem: &str, source_ext: &str, source: &str, header: &str) {
+/// Whether `language`'s compiler is installed. A missing compiler skips the test, unless CI lists
+/// the language in `EQ_REQUIRE_COMPILERS` (comma-separated, e.g. `zig,nim,d`): there a skip would
+/// report `ok` for a test that never ran, so it fails instead.
+fn available(language: Language) -> bool {
+    if find_compiler(language).is_some() {
+        return true;
+    }
+    let name = language.cli_name();
+    let required = std::env::var("EQ_REQUIRE_COMPILERS").unwrap_or_default();
+    assert!(
+        !required.split(',').any(|item| item.trim() == name),
+        "{name} is listed in EQ_REQUIRE_COMPILERS but its compiler was not found"
+    );
+    eprintln!("skipping: {name} compiler not installed");
+    false
+}
+
+/// Build and run a crate whose `build.rs` loads `source` and whose `main.rs` prints
+/// `add(20, 22)` through the generated bindings. With `header: None` there is no hand-written
+/// header, so the bindings must come from one equilibrium synthesizes.
+fn build_and_run(stem: &str, source_ext: &str, source: &str, header: Option<&str>) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -35,7 +53,9 @@ equilibrium-ffi = {{ path = {repo:?} }}
         ),
     );
     write(&root.join(format!("native/{stem}.{source_ext}")), source);
-    write(&root.join(format!("native/{stem}.h")), header);
+    if let Some(header) = header {
+        write(&root.join(format!("native/{stem}.h")), header);
+    }
     write(
         &root.join("build.rs"),
         &format!(
@@ -76,28 +96,144 @@ fn main() {{
 
 #[test]
 fn nim_static_library_links_through_load() {
-    if find_compiler(Language::Nim).is_none() {
-        eprintln!("skipping: nim not installed");
+    if !available(Language::Nim) {
         return;
     }
     build_and_run(
         "nmath",
         "nim",
         "proc nmath_add*(a, b: cint): cint {.exportc, cdecl.} = a + b\n",
-        "int nmath_add(int a, int b);\n",
+        Some("int nmath_add(int a, int b);\n"),
     );
 }
 
 #[test]
 fn rust_library_links_through_load() {
-    if find_compiler(Language::Rust).is_none() {
-        eprintln!("skipping: rustc not installed");
+    if !available(Language::Rust) {
         return;
     }
     build_and_run(
         "rmath",
         "rs",
         "#[no_mangle]\npub extern \"C\" fn rmath_add(a: i32, b: i32) -> i32 { a + b }\n",
-        "int rmath_add(int a, int b);\n",
+        Some("int rmath_add(int a, int b);\n"),
+    );
+}
+
+#[test]
+fn c_source_without_a_header_links_through_load() {
+    if !available(Language::C) {
+        return;
+    }
+    build_and_run(
+        "cmath",
+        "c",
+        "static int twice(int v) { return v * 2; }\nint cmath_add(int a, int b) { return twice(a + b) / 2; }\n",
+        None,
+    );
+}
+
+#[test]
+fn cpp_source_without_a_header_links_through_load() {
+    if !available(Language::Cpp) {
+        return;
+    }
+    build_and_run(
+        "cppmath",
+        "cpp",
+        "struct Acc { int v; int add(int x) { return v + x; } };\n\
+         extern \"C\" int cppmath_add(int a, int b) { Acc acc{a}; return acc.add(b); }\n",
+        None,
+    );
+}
+
+#[test]
+fn d_source_without_a_header_links_through_load() {
+    if !available(Language::D) {
+        return;
+    }
+    let info = find_compiler(Language::D).unwrap();
+    if info.compiler.as_deref() == Some("gdc") {
+        eprintln!("skipping: gdc has no -HC header output");
+        return;
+    }
+    build_and_run(
+        "dmath",
+        "d",
+        "module dmath;\nint helper(int a) { return a; }\n\
+         extern(C) int dmath_add(int a, int b) { return helper(a) + b; }\n",
+        None,
+    );
+}
+
+#[test]
+fn nim_source_without_a_header_links_through_load() {
+    if !available(Language::Nim) {
+        return;
+    }
+    build_and_run(
+        "nimgen",
+        "nim",
+        "proc twice(v: cint): cint = v * 2\n\
+         proc nimgen_add*(a, b: cint): cint {.exportc, cdecl.} = twice(a + b) div 2\n",
+        None,
+    );
+}
+
+#[test]
+fn rust_source_without_a_header_links_through_load() {
+    if !available(Language::Rust) {
+        return;
+    }
+    build_and_run(
+        "rgen",
+        "rs",
+        "fn twice(v: i32) -> i32 { v * 2 }\n\
+         #[no_mangle]\npub extern \"C\" fn rgen_add(a: i32, b: i32) -> i32 { twice(a + b) / 2 }\n",
+        None,
+    );
+}
+
+#[test]
+fn zig_source_without_a_header_links_through_load() {
+    if !available(Language::Zig) {
+        return;
+    }
+    build_and_run(
+        "zmath",
+        "zig",
+        "fn twice(v: c_int) c_int { return v * 2; }\n\
+         export fn zmath_add(a: c_int, b: c_int) c_int { return @divTrunc(twice(a + b), 2); }\n",
+        None,
+    );
+}
+
+#[test]
+fn odin_source_without_a_header_links_through_load() {
+    if !available(Language::Odin) {
+        return;
+    }
+    build_and_run(
+        "omath",
+        "odin",
+        "package omath\nimport \"core:c\"\n\n\
+         twice :: proc \"c\" (v: c.int) -> c.int { return v * 2 }\n\n\
+         @(export)\nomath_add :: proc \"c\" (a, b: c.int) -> c.int { return twice(a + b) / 2 }\n",
+        None,
+    );
+}
+
+#[test]
+fn v_source_without_a_header_links_through_load() {
+    if !available(Language::V) {
+        return;
+    }
+    build_and_run(
+        "vmath",
+        "v",
+        "module main\n\nfn twice(v int) int { return v * 2 }\n\n\
+         @[export: 'vmath_add']\npub fn vmath_add(a int, b int) int { return twice(a + b) / 2 }\n\n\
+         fn main() {}\n",
+        None,
     );
 }

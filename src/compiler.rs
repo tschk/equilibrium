@@ -118,6 +118,8 @@ pub struct CompileResult {
     pub stdout: String,
     /// Compiler warnings (stderr, if successful).
     pub stderr: String,
+    /// Exports left out of a synthesized header, with the reason.
+    pub warnings: Vec<String>,
 }
 
 /// Compile a source file to C intermediate representation.
@@ -253,7 +255,7 @@ fn compile_inner(
     if language == Language::ScriptC {
         crate::scriptc::configure_command(&mut command);
     }
-    if language == Language::Nim {
+    if matches!(language, Language::Nim | Language::Odin) {
         prefer_system_archiver(&mut command, &output_dir)?;
     }
     let output = command.output()?;
@@ -286,13 +288,15 @@ fn compile_inner(
     };
 
     // Check if header was generated (language-specific)
+    let mut synth_warnings = Vec::new();
     let header_path = if header_output.exists() {
         Some(header_output)
     } else if let Some(copied) = copy_sibling_header(&input, &output_dir) {
         Some(copied)
+    } else if let Ok(generated) = generate_header(&input, &output_dir, language) {
+        Some(generated)
     } else {
-        // Try to generate header for some languages
-        generate_header(&input, &output_dir, language).ok()
+        synthesize_header(&input, &header_output, language, &mut synth_warnings)?
     };
 
     Ok(CompileResult {
@@ -301,12 +305,13 @@ fn compile_inner(
         language,
         stdout,
         stderr,
+        warnings: synth_warnings,
     })
 }
 
-/// Nim archives `--app:staticlib` output with whatever `ar` is first on `PATH`. On macOS a
+/// Nim and Odin archive static libraries with whatever `ar` is first on `PATH`. On macOS a
 /// Homebrew GNU binutils `ar` there writes archives Apple's linker rejects ("member not 8-byte
-/// aligned"), so Nim gets a private `PATH` entry whose `ar` is the system one.
+/// aligned"), so they get a private `PATH` entry whose `ar` is the system one.
 fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::Result<()> {
     let system_ar = Path::new("/usr/bin/ar");
     if !cfg!(target_os = "macos") || !system_ar.is_file() {
@@ -336,13 +341,11 @@ fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::
 
 fn artifact_filename(language: Language, stem: &str) -> String {
     match language {
-        Language::C
-        | Language::Cpp
-        | Language::Zig
-        | Language::D
-        | Language::Odin
-        | Language::Hare => format!("{stem}.o"),
-        Language::V => format!("{stem}.c"),
+        Language::C | Language::Cpp | Language::Zig | Language::D | Language::Hare => {
+            format!("{stem}.o")
+        }
+        Language::Odin => format!("lib{stem}.a"),
+
         // rustc's `-l static=<name>` / `-l dylib=<name>` only finds `lib<name>.<ext>` on Unix, so
         // archives and shared libraries carry the `lib` prefix `emit_cargo_link` strips again.
         Language::Nim => format!("lib{stem}.a"),
@@ -351,7 +354,7 @@ fn artifact_filename(language: Language, stem: &str) -> String {
         Language::ScriptC => format!("lib{stem}.a"),
         // Unreachable through `compile_inner`, which refuses C# producers.
         Language::CSharp => format!("{stem}.dll"),
-        Language::Rust => {
+        Language::Rust | Language::V => {
             if cfg!(target_os = "windows") {
                 format!("{stem}.dll")
             } else if cfg!(target_os = "macos") {
@@ -500,6 +503,23 @@ pub(crate) fn extra_link_arg_allowed(arg: &str) -> bool {
     extra_compile_arg_allowed(arg) && (arg.starts_with("-l") || arg.starts_with("-L"))
 }
 
+/// Write a header synthesized from the source's exported functions (`header_synth`), for
+/// languages whose compiler writes none. Warnings name exports that could not be mapped.
+fn synthesize_header(
+    input: &Path,
+    header_output: &Path,
+    language: Language,
+    warnings: &mut Vec<String>,
+) -> Result<Option<PathBuf>, CompileError> {
+    let source = String::from_utf8_lossy(&std::fs::read(input)?).into_owned();
+    let Some(synthesized) = crate::header_synth::synthesize(language, &source) else {
+        return Ok(None);
+    };
+    std::fs::write(header_output, synthesized.header)?;
+    warnings.extend(synthesized.warnings);
+    Ok(Some(header_output.to_path_buf()))
+}
+
 /// Generate a C header file for the compiled code.
 fn generate_header(
     input: &Path,
@@ -537,13 +557,31 @@ fn generate_header(
             }
             Err(CompileError::UnsupportedCOutput { language })
         }
-        Language::V => {
-            // V generates headers automatically with -backend c
-            // The header should be alongside the C file
-            if header_path.exists() {
-                Ok(header_path)
-            } else {
-                Err(CompileError::UnsupportedCOutput { language })
+        Language::D => {
+            // ldc2 and dmd write a C++ header for the `extern(C)` surface with `-HC`; gdc has no
+            // equivalent. `-o-` skips code generation, which `compile_inner` already did.
+            let compiler = find_compiler(Language::D)
+                .and_then(|info| info.compiler_path)
+                .ok_or(CompileError::UnsupportedCOutput { language })?;
+            let hc = output_dir.join(format!("{stem}.hc.h"));
+            let output = Command::new(&compiler)
+                .arg("-o-")
+                .arg(format!("-HCf={}", hc.display()))
+                .arg(input)
+                .output()?;
+            let text = std::fs::read_to_string(&hc)
+                .ok()
+                .filter(|_| output.status.success());
+            let _ = std::fs::remove_file(&hc);
+            match text
+                .as_deref()
+                .and_then(crate::header_synth::d_header_from_hc)
+            {
+                Some(header) => {
+                    std::fs::write(&header_path, header)?;
+                    Ok(header_path)
+                }
+                None => Err(CompileError::UnsupportedCOutput { language }),
             }
         }
         _ => Err(CompileError::UnsupportedCOutput { language }),

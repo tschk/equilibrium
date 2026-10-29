@@ -161,11 +161,14 @@ impl Language {
     /// Get the command to compile to C intermediate.
     pub fn to_c_args(&self, input: &str, output: &str) -> Vec<String> {
         match self {
+            // `-backend c` emits a whole program (runtime and `main`) that cannot be linked into
+            // a host; a shared library carries V's runtime privately and exports `@[export]`s.
             Language::V => vec![
+                "-shared".to_string(),
+                "-gc".to_string(),
+                "none".to_string(),
                 "-o".to_string(),
                 output.to_string(),
-                "-backend".to_string(),
-                "c".to_string(),
                 input.to_string(),
             ],
             Language::Zig => {
@@ -248,13 +251,14 @@ impl Language {
                 args
             }
             Language::Odin => {
-                // Odin compiles to object files
+                // `-build-mode:obj` writes one object per package (runtime included), not the
+                // single object requested, so Odin builds a static archive instead.
                 let mut args = vec![
                     "build".to_string(),
                     input.to_string(),
                     "-file".to_string(),
                     format!("-out:{output}"),
-                    "-build-mode:obj".to_string(),
+                    "-build-mode:static".to_string(),
                 ];
                 if let Some(pic) = Self::pic_odin_reloc() {
                     args.push(pic.to_string());
