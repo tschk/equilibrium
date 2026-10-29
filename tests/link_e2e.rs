@@ -213,3 +213,19 @@ fn odin_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn v_source_without_a_header_links_through_load() {
+    if find_compiler(Language::V).is_none() {
+        eprintln!("skipping: v not installed");
+        return;
+    }
+    build_and_run(
+        "vmath",
+        "v",
+        "module main\n\nfn twice(v int) int { return v * 2 }\n\n\
+         @[export: 'vmath_add']\npub fn vmath_add(a int, b int) int { return twice(a + b) / 2 }\n\n\
+         fn main() {}\n",
+        None,
+    );
+}

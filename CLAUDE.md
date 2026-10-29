@@ -100,7 +100,7 @@ Zig objects must be compiled with `-fPIC -OReleaseFast` to link cleanly into Rus
 
 ### V FFI
 
-A `module main` V object drags V's runtime and `main` into Rust's link. The polyglot-gui builds `v_module.v` as a non-main module with `v -shared -gc none` and links the resulting `libv_module.{dylib,so}` with an rpath (Unix hosts only). `load()` on a `.v` file produces V's `-backend c` source and does not link it.
+A `module main` V object drags V's runtime and `main` into Rust's link. The polyglot-gui builds `v_module.v` as a non-main module with `v -shared -gc none` and links the resulting `libv_module.{dylib,so}` with an rpath (Unix hosts only). `load()` on a `.v` file does the same: `v -shared -gc none`, linked as a dylib with an rpath, with the header synthesized from `@[export]` functions (`src/header_synth.rs`).
 
 ### Windows build notes
 

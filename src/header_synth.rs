@@ -34,6 +34,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
         Language::Rust => (rust_functions(source), rust_type, String::new()),
         Language::Zig => (zig_functions(source), zig_type, String::new()),
         Language::Odin => (odin_functions(source), odin_type, String::new()),
+        Language::V => (v_functions(source), v_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -817,6 +818,79 @@ fn odin_type(ty: &str) -> Option<String> {
     )
 }
 
+// ── V ──────────────────────────────────────────────────────────────────────
+
+/// `@[export: 'name']` (or the older `[export: 'name']`) on a following `fn`; the attribute
+/// names the C symbol.
+fn v_functions(source: &str) -> Vec<ForeignFn> {
+    let text = strip_c_comments(source);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut symbol: Option<String> = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let attr = trimmed
+            .strip_prefix("@[")
+            .or_else(|| trimmed.strip_prefix('['));
+        if let Some(attr) = attr.filter(|attr| attr.trim_start().starts_with("export")) {
+            symbol = attr
+                .split(['\'', '"'])
+                .nth(1)
+                .map(str::to_string)
+                .filter(|name| !name.is_empty());
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        let declaration = trimmed.strip_prefix("pub ").unwrap_or(trimmed);
+        if let (Some(name), true) = (symbol.take(), declaration.starts_with("fn ")) {
+            let signature = signature_text(&lines, index, '{');
+            if let Some((params, after)) = parenthesized(&signature) {
+                if let Some(params) = named_params(params, &[], " ") {
+                    let ret = after.trim().to_string();
+                    out.push(ForeignFn {
+                        symbol: name,
+                        params,
+                        ret: (!ret.is_empty()).then_some(ret),
+                    });
+                }
+            }
+        }
+        symbol = None;
+    }
+    out
+}
+
+fn v_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix('&') {
+        return v_type(inner).map(|c| pointer_to(&c, false));
+    }
+    Some(
+        match ty {
+            "int" | "i32" => "int32_t",
+            "i8" => "int8_t",
+            "i16" => "int16_t",
+            "i64" => "int64_t",
+            "u8" | "byte" => "uint8_t",
+            "u16" => "uint16_t",
+            "u32" => "uint32_t",
+            "u64" => "uint64_t",
+            "isize" => "intptr_t",
+            "usize" => "size_t",
+            "f32" => "float",
+            "f64" => "double",
+            "bool" => "bool",
+            "voidptr" => "void *",
+            "charptr" => "char *",
+            "byteptr" => "uint8_t *",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1043,5 +1117,38 @@ takes_slice :: proc "c" (s: []u8) -> int { return len(s) }
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("takes_slice")));
+    }
+
+    #[test]
+    fn v_header_maps_exported_fns() {
+        let source = r#"
+module vm
+
+fn helper(a int) int { return a }
+
+@[export: 'vm_add']
+pub fn add(a int, b int) int { return a + b }
+
+@[export: 'vm_fill']
+fn fill(buf &u8, n usize, ctx voidptr) {}
+
+[export: 'vm_old']
+pub fn old_style(x f64) f64 { return x }
+
+@[export: 'vm_bad']
+pub fn bad(s string) int { return s.len }
+"#;
+        let out = synthesize(Language::V, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int32_t vm_add(int32_t a, int32_t b);"), "{h}");
+        assert!(
+            h.contains("void vm_fill(uint8_t * buf, size_t n, void * ctx);"),
+            "{h}"
+        );
+        assert!(h.contains("double vm_old(double x);"), "{h}");
+        for absent in ["helper", "vm_bad("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("vm_bad")));
     }
 }

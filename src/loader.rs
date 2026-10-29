@@ -432,15 +432,6 @@ fn emit_cargo_link(
                 ));
             }
         }
-        "c" => {
-            // V's `-backend c` output is a whole program (runtime and `main`), not a library;
-            // handing it to the linker would compile a second `main` into the binary.
-            warnings.push(format!(
-                "{} is C source, not a linkable library; it was not linked",
-                output_path.display()
-            ));
-            return Ok(());
-        }
         _ => {
             println!("cargo:rustc-link-arg={}", output_path.display());
         }

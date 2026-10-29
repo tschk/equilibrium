@@ -146,22 +146,28 @@ match compile_to_c(source, output_dir) {
 
 **V (Vlang):**
 ```bash
-v -o output.c -backend c input.v
+v -shared -gc none -o liboutput.dylib input.v   # .so on Linux
 ```
 
 **Nim:**
 ```bash
-nim c --nimcache:. -o:output.o input.nim
+nim c --nimcache:. --noMain --app:staticlib --mm:none -o:liboutput.a input.nim
 ```
 
 **D:**
 ```bash
-ldc2 -c -of=output.o -HC input.d  # -HC generates C header
+ldc2 -c -of=output.o input.d
+ldc2 -o- -HCf=output.hc.h input.d   # C++ header for extern(C); equilibrium converts it to C
 ```
 
 **Zig:**
 ```bash
-zig build-obj -femit-bin=output.o input.zig
+zig build-obj -fPIC -OReleaseFast -femit-bin=output.o input.zig
+```
+
+**Odin:**
+```bash
+odin build input.odin -file -build-mode:static -out:liboutput.a
 ```
 
 **TypeScript/JavaScript (scriptc):**
@@ -270,18 +276,14 @@ pub struct Point {
 
 ## Complete Example
 
-Full workflow from a Zig source to Rust usage. Bindings come from a C header: equilibrium generates one for TypeScript (scriptc) and for Rust when `cbindgen` is installed; for Zig, C, C++, D, Nim, Odin and Hare you write `<stem>.h` beside the source.
+Full workflow from a Zig source to Rust usage. Bindings come from a C header, which equilibrium synthesizes from the source's exported functions (see the README's Supported Languages table); a hand-written `<stem>.h` beside the source takes precedence.
 
-**1. Write the Zig code (`native/math.zig`) and its header (`native/math.h`):**
+**1. Write the Zig code (`native/math.zig`):**
 
 ```zig
 pub export fn add_zig(a: c_int, b: c_int) c_int {
     return a + b;
 }
-```
-
-```c
-int add_zig(int a, int b);
 ```
 
 **2. Load it from `build.rs`** (compiles, emits the link directives, generates bindings):
@@ -303,8 +305,6 @@ fn main() {
     println!("5 + 3 = {}", unsafe { add_zig(5, 3) });
 }
 ```
-
-V is not a good fit for this flow: `load()` on a `.v` file produces V's `-backend c` program source, which is not linked. Build V as a shared library instead (`v -shared -gc none`, non-`main` module), as `examples/polyglot-gui/build.rs` does.
 
 ## Error Handling
 

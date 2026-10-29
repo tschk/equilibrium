@@ -161,11 +161,14 @@ impl Language {
     /// Get the command to compile to C intermediate.
     pub fn to_c_args(&self, input: &str, output: &str) -> Vec<String> {
         match self {
+            // `-backend c` emits a whole program (runtime and `main`) that cannot be linked into
+            // a host; a shared library carries V's runtime privately and exports `@[export]`s.
             Language::V => vec![
+                "-shared".to_string(),
+                "-gc".to_string(),
+                "none".to_string(),
                 "-o".to_string(),
                 output.to_string(),
-                "-backend".to_string(),
-                "c".to_string(),
                 input.to_string(),
             ],
             Language::Zig => {

@@ -342,7 +342,7 @@ fn artifact_filename(language: Language, stem: &str) -> String {
             format!("{stem}.o")
         }
         Language::Odin => format!("lib{stem}.a"),
-        Language::V => format!("{stem}.c"),
+
         // rustc's `-l static=<name>` / `-l dylib=<name>` only finds `lib<name>.<ext>` on Unix, so
         // archives and shared libraries carry the `lib` prefix `emit_cargo_link` strips again.
         Language::Nim => format!("lib{stem}.a"),
@@ -351,7 +351,7 @@ fn artifact_filename(language: Language, stem: &str) -> String {
         Language::ScriptC => format!("lib{stem}.a"),
         // Unreachable through `compile_inner`, which refuses C# producers.
         Language::CSharp => format!("{stem}.dll"),
-        Language::Rust => {
+        Language::Rust | Language::V => {
             if cfg!(target_os = "windows") {
                 format!("{stem}.dll")
             } else if cfg!(target_os = "macos") {
@@ -579,15 +579,6 @@ fn generate_header(
                     Ok(header_path)
                 }
                 None => Err(CompileError::UnsupportedCOutput { language }),
-            }
-        }
-        Language::V => {
-            // V generates headers automatically with -backend c
-            // The header should be alongside the C file
-            if header_path.exists() {
-                Ok(header_path)
-            } else {
-                Err(CompileError::UnsupportedCOutput { language })
             }
         }
         _ => Err(CompileError::UnsupportedCOutput { language }),
