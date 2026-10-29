@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [ main ]
+  # Every PR gets checks, whatever its base: a stacked PR (based on another PR's branch) would
+  # otherwise report no checks at all, which reads as passing.
   pull_request:
-    branches: [ main ]
 
 permissions:
   contents: read
