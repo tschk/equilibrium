@@ -89,11 +89,22 @@ jobs:
       if: runner.os == 'macOS'
       run: brew install ldc
 
+    - name: Install Odin
+      uses: laytan/setup-odin@v2
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        release: latest
+
+    - name: Install V
+      uses: vlang/setup-v@v1.7
+      with:
+        stable: true
+
     - name: Run tests with multiple compilers
       run: cargo test --all-features
       env:
         # Fail, rather than skip and report `ok`, if an installed-above compiler is missing.
-        EQ_REQUIRE_COMPILERS: zig,nim,d
+        EQ_REQUIRE_COMPILERS: zig,nim,d,odin,v
 
   docs:
     name: Documentation
