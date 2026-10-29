@@ -310,7 +310,11 @@ pub(crate) fn d_header_from_hc(hc: &str) -> Option<String> {
     let mut structs = Vec::new();
     let mut prototypes = Vec::new();
     let mut lines = hc.lines().map(str::trim);
+    let mut after_template = false;
     while let Some(line) = lines.next() {
+        // `template <typename T>` (e.g. LDC 1.36's `_d_dynamicArray`) introduces a C++ template;
+        // the declaration that follows has no C form.
+        let templated = std::mem::replace(&mut after_template, line.starts_with("template"));
         if line.starts_with("#include <") {
             includes.push(line.to_string());
         } else if let Some(proto) = line.strip_prefix("extern \"C\" ") {
@@ -320,6 +324,19 @@ pub(crate) fn d_header_from_hc(hc: &str) -> Option<String> {
             .and_then(|rest| rest.strip_suffix(" final").or(Some(rest)))
             .filter(|name| crate::c_header::is_c_identifier(name))
         {
+            if templated {
+                // Skip the template's body.
+                let mut depth = line.matches('{').count();
+                for line in lines.by_ref() {
+                    depth += line.matches('{').count();
+                    let closes = line.matches('}').count();
+                    if closes >= depth && closes > 0 {
+                        break;
+                    }
+                    depth -= closes;
+                }
+                continue;
+            }
             // Members are `type name;` lines at the struct's own brace level.
             let mut depth = 0usize;
             let mut fields = Vec::new();
@@ -948,6 +965,12 @@ const char *label(int, double) { return "x"; }
         assert!(!h.contains("extern"), "{h}");
         assert!(!h.contains("cpp_only"), "{h}");
         assert!(d_header_from_hc("#pragma once\n").is_none());
+
+        // LDC 1.36 also emits a template helper; it must not become a C struct with a free `T`.
+        let templated = "template <typename T>\nstruct _d_dynamicArray final\n{\n    size_t length;\n    T *ptr;\n\n    _d_dynamicArray() : length(0), ptr(NULL) { }\n};\n\nextern \"C\" int32_t f(int32_t a);\n";
+        let h = d_header_from_hc(templated).expect("header");
+        assert!(!h.contains("_d_dynamicArray"), "{h}");
+        assert!(h.contains("\nint32_t f(int32_t a);"), "{h}");
     }
 
     #[test]

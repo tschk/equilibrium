@@ -78,7 +78,9 @@ pub fn generate_bindings_from_parsed(
         sanitize_path_for_comment(header)
     ));
     code.push('\n');
-    code.push_str("use std::os::raw::*;\n");
+    // A header with only fixed-width types uses nothing from `std::os::raw`; without the allow a
+    // consumer building with `-D warnings` fails on generated code it does not control.
+    code.push_str("#[allow(unused_imports)]\nuse std::os::raw::*;\n");
     code.push('\n');
 
     emit_bindings_from_parsed(parsed, options, &mut code, &mut warnings);
