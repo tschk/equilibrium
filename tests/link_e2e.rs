@@ -237,3 +237,16 @@ fn v_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn hare_source_without_a_header_links_through_load() {
+    if !available(Language::Hare) {
+        return;
+    }
+    build_and_run(
+        "hmath",
+        "ha",
+        "fn twice(v: int) int = v * 2;\n\nexport fn hmath_add(a: int, b: int) int = twice(a + b) / 2;\n",
+        None,
+    );
+}
