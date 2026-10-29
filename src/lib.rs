@@ -30,6 +30,7 @@ mod compiler;
 mod config;
 mod detector;
 mod exports;
+mod header_synth;
 mod imports;
 mod limits;
 mod loader;

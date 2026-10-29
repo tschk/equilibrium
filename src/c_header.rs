@@ -606,7 +606,7 @@ pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
 
 /// Split a parameter list at commas that are not nested inside parentheses or brackets, so a
 /// function-pointer parameter `void (*cb)(int, int)` stays one item.
-fn split_top_level_commas(list: &str) -> Vec<&str> {
+pub(crate) fn split_top_level_commas(list: &str) -> Vec<&str> {
     let mut depth = 0usize;
     let mut start = 0;
     let mut items = Vec::new();

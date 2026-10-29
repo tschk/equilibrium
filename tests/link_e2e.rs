@@ -13,9 +13,10 @@ fn write(path: &Path, content: &str) {
     std::fs::write(path, content).unwrap();
 }
 
-/// Build and run a crate whose `build.rs` loads `source` (with a sibling `header`) and whose
-/// `main.rs` prints `add(20, 22)` through the generated bindings.
-fn build_and_run(stem: &str, source_ext: &str, source: &str, header: &str) {
+/// Build and run a crate whose `build.rs` loads `source` and whose `main.rs` prints
+/// `add(20, 22)` through the generated bindings. With `header: None` there is no hand-written
+/// header, so the bindings must come from one equilibrium synthesizes.
+fn build_and_run(stem: &str, source_ext: &str, source: &str, header: Option<&str>) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"));
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -35,7 +36,9 @@ equilibrium-ffi = {{ path = {repo:?} }}
         ),
     );
     write(&root.join(format!("native/{stem}.{source_ext}")), source);
-    write(&root.join(format!("native/{stem}.h")), header);
+    if let Some(header) = header {
+        write(&root.join(format!("native/{stem}.h")), header);
+    }
     write(
         &root.join("build.rs"),
         &format!(
@@ -84,7 +87,7 @@ fn nim_static_library_links_through_load() {
         "nmath",
         "nim",
         "proc nmath_add*(a, b: cint): cint {.exportc, cdecl.} = a + b\n",
-        "int nmath_add(int a, int b);\n",
+        Some("int nmath_add(int a, int b);\n"),
     );
 }
 
@@ -98,6 +101,20 @@ fn rust_library_links_through_load() {
         "rmath",
         "rs",
         "#[no_mangle]\npub extern \"C\" fn rmath_add(a: i32, b: i32) -> i32 { a + b }\n",
-        "int rmath_add(int a, int b);\n",
+        Some("int rmath_add(int a, int b);\n"),
+    );
+}
+
+#[test]
+fn c_source_without_a_header_links_through_load() {
+    if find_compiler(Language::C).is_none() {
+        eprintln!("skipping: no C compiler");
+        return;
+    }
+    build_and_run(
+        "cmath",
+        "c",
+        "static int twice(int v) { return v * 2; }\nint cmath_add(int a, int b) { return twice(a + b) / 2; }\n",
+        None,
     );
 }

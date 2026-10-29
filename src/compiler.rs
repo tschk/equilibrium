@@ -118,6 +118,8 @@ pub struct CompileResult {
     pub stdout: String,
     /// Compiler warnings (stderr, if successful).
     pub stderr: String,
+    /// Exports left out of a synthesized header, with the reason.
+    pub warnings: Vec<String>,
 }
 
 /// Compile a source file to C intermediate representation.
@@ -286,13 +288,15 @@ fn compile_inner(
     };
 
     // Check if header was generated (language-specific)
+    let mut synth_warnings = Vec::new();
     let header_path = if header_output.exists() {
         Some(header_output)
     } else if let Some(copied) = copy_sibling_header(&input, &output_dir) {
         Some(copied)
+    } else if let Ok(generated) = generate_header(&input, &output_dir, language) {
+        Some(generated)
     } else {
-        // Try to generate header for some languages
-        generate_header(&input, &output_dir, language).ok()
+        synthesize_header(&input, &header_output, language, &mut synth_warnings)?
     };
 
     Ok(CompileResult {
@@ -301,6 +305,7 @@ fn compile_inner(
         language,
         stdout,
         stderr,
+        warnings: synth_warnings,
     })
 }
 
@@ -495,6 +500,23 @@ fn extra_flag_syntax(arg: &str) -> bool {
 
 pub(crate) fn extra_link_arg_allowed(arg: &str) -> bool {
     extra_compile_arg_allowed(arg) && (arg.starts_with("-l") || arg.starts_with("-L"))
+}
+
+/// Write a header synthesized from the source's exported functions (`header_synth`), for
+/// languages whose compiler writes none. Warnings name exports that could not be mapped.
+fn synthesize_header(
+    input: &Path,
+    header_output: &Path,
+    language: Language,
+    warnings: &mut Vec<String>,
+) -> Result<Option<PathBuf>, CompileError> {
+    let source = String::from_utf8_lossy(&std::fs::read(input)?).into_owned();
+    let Some(synthesized) = crate::header_synth::synthesize(language, &source) else {
+        return Ok(None);
+    };
+    std::fs::write(header_output, synthesized.header)?;
+    warnings.extend(synthesized.warnings);
+    Ok(Some(header_output.to_path_buf()))
 }
 
 /// Generate a C header file for the compiled code.
