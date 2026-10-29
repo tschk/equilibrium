@@ -29,6 +29,7 @@ type TypeMap = fn(&str) -> Option<String>;
 pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized> {
     let (functions, map, prelude): (Vec<ForeignFn>, TypeMap, String) = match language {
         Language::C => (c_functions(source), c_type, c_type_declarations(source)),
+        Language::Cpp => (c_functions(&extern_c_items(source)), c_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -222,6 +223,48 @@ fn c_type_declarations(source: &str) -> String {
     out.join("\n")
 }
 
+// ── C++ ────────────────────────────────────────────────────────────────────
+
+/// The `extern "C"` part of a C++ source, as C: the contents of `extern "C" { … }` blocks and
+/// each `extern "C" <definition>`. Everything else is C++ and has no C ABI.
+fn extern_c_items(source: &str) -> String {
+    let text = strip_c_comments(source);
+    let mut out = String::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find("extern \"C\"") {
+        rest = rest[at + "extern \"C\"".len()..].trim_start();
+        let block = rest.starts_with('{');
+        let start = usize::from(block);
+        let mut depth = 0usize;
+        let mut end = rest.len();
+        for (index, ch) in rest.char_indices().skip(start) {
+            match ch {
+                '{' => depth += 1,
+                '}' if depth == 0 && block => {
+                    end = index;
+                    break;
+                }
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 && !block {
+                        end = index + 1;
+                        break;
+                    }
+                }
+                ';' if depth == 0 && !block => {
+                    end = index + 1;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        out.push_str(&rest[start..end]);
+        out.push('\n');
+        rest = &rest[(end + usize::from(block)).min(rest.len())..];
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,5 +302,25 @@ const char *label(int, double) { return "x"; }
         );
         assert!(!h.contains("helper"), "{h}");
         assert!(!h.contains("main"), "{h}");
+    }
+
+    #[test]
+    fn cpp_header_keeps_only_extern_c_definitions() {
+        let source = r#"
+#include <string>
+class Counter { public: int add(int a, int b) { return a + b; } };
+int mangled(int a) { return a; }
+extern "C" int single(int a, int b) { Counter c; return c.add(a, b); }
+extern "C" {
+    double scale(double v, int times) { return v * times; }
+    static int hidden(int a) { return a; }
+}
+"#;
+        let h = synthesize(Language::Cpp, source).expect("header").header;
+        assert!(h.contains("int single(int a, int b);"), "{h}");
+        assert!(h.contains("double scale(double v, int times);"), "{h}");
+        for absent in ["mangled", "hidden", "Counter", "#include <string>"] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
     }
 }

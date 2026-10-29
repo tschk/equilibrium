@@ -118,3 +118,18 @@ fn c_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn cpp_source_without_a_header_links_through_load() {
+    if find_compiler(Language::Cpp).is_none() {
+        eprintln!("skipping: no C++ compiler");
+        return;
+    }
+    build_and_run(
+        "cppmath",
+        "cpp",
+        "struct Acc { int v; int add(int x) { return v + x; } };\n\
+         extern \"C\" int cppmath_add(int a, int b) { Acc acc{a}; return acc.add(b); }\n",
+        None,
+    );
+}
