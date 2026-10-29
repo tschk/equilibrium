@@ -33,6 +33,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
         Language::Nim => (nim_functions(source), nim_type, String::new()),
         Language::Rust => (rust_functions(source), rust_type, String::new()),
         Language::Zig => (zig_functions(source), zig_type, String::new()),
+        Language::Odin => (odin_functions(source), odin_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -710,6 +711,112 @@ fn zig_type(ty: &str) -> Option<String> {
     )
 }
 
+// ── Odin ───────────────────────────────────────────────────────────────────
+
+/// `@(export) name :: proc "c" (a, b: c.int) -> c.int {`, with `link_name="…"` renaming the
+/// symbol. Only the `"c"`/`"cdecl"` calling conventions are C ABI; Odin's default convention
+/// passes an implicit context and is skipped.
+fn odin_functions(source: &str) -> Vec<ForeignFn> {
+    let text = strip_c_comments(source);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut exported = false;
+    let mut link_name = None;
+    for (index, line) in lines.iter().enumerate() {
+        let mut trimmed = line.trim();
+        while let Some(attr) = trimmed.strip_prefix('@') {
+            let (body, rest) = match attr.strip_prefix('(') {
+                Some(inner) => inner.split_once(')').unwrap_or((inner, "")),
+                None => attr.split_once(char::is_whitespace).unwrap_or((attr, "")),
+            };
+            let body = body.replace(' ', "");
+            exported |= body.split(',').any(|item| item == "export");
+            if let Some(name) = body.split("link_name=\"").nth(1) {
+                link_name = name.split('"').next().map(str::to_string);
+            }
+            trimmed = rest.trim_start();
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((name, rest)) = trimmed.split_once("::") {
+            let rest = rest.trim_start();
+            let convention = rest
+                .strip_prefix("proc")
+                .map(str::trim_start)
+                .and_then(|after| after.strip_prefix('"'))
+                .and_then(|after| after.split('"').next());
+            if exported && matches!(convention, Some("c" | "cdecl")) {
+                let signature = signature_text(&lines, index, '{');
+                let after_proc = signature.split_once("proc").map_or("", |(_, rest)| rest);
+                if let Some((params, after)) = parenthesized(after_proc) {
+                    if let Some(params) = named_params(params, &[], ":") {
+                        let ret = after
+                            .trim()
+                            .strip_prefix("->")
+                            .map(|ty| ty.trim().to_string())
+                            .filter(|ty| !ty.is_empty());
+                        out.push(ForeignFn {
+                            symbol: link_name.take().unwrap_or_else(|| name.trim().to_string()),
+                            params,
+                            ret,
+                        });
+                    }
+                }
+            }
+        }
+        exported = false;
+        link_name = None;
+    }
+    out
+}
+
+fn odin_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix("[^]").or_else(|| ty.strip_prefix('^')) {
+        return odin_type(inner).map(|c| pointer_to(&c, false));
+    }
+    let c_name = ty.strip_prefix("c.");
+    if let Some(name) = c_name {
+        let mapped = match name {
+            "int" | "uint" | "long" | "ulong" | "short" | "ushort" | "char" | "float"
+            | "double" | "size_t" | "ssize_t" | "bool" => name
+                .replace("uint", "unsigned int")
+                .replace("ulong", "unsigned long")
+                .replace("ushort", "unsigned short")
+                .replace("ssize_t", "ptrdiff_t"),
+            "longlong" => "long long".to_string(),
+            "ulonglong" => "unsigned long long".to_string(),
+            "schar" => "signed char".to_string(),
+            "uchar" => "unsigned char".to_string(),
+            other if other.ends_with("_t") && other.contains("int") => other.to_string(),
+            _ => return None,
+        };
+        return Some(mapped);
+    }
+    Some(
+        match ty {
+            "i8" => "int8_t",
+            "i16" => "int16_t",
+            "i32" => "int32_t",
+            "i64" => "int64_t",
+            "u8" => "uint8_t",
+            "u16" => "uint16_t",
+            "u32" => "uint32_t",
+            "u64" => "uint64_t",
+            "int" => "intptr_t",
+            "uint" | "uintptr" => "uintptr_t",
+            "f32" => "float",
+            "f64" => "double",
+            "bool" | "b8" => "bool",
+            "rawptr" => "void *",
+            "cstring" => "char *",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -903,5 +1010,38 @@ export fn zslice(s: []const u8) usize { return s.len; }
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("zslice")));
+    }
+
+    #[test]
+    fn odin_header_maps_exported_c_procs() {
+        let source = r#"
+package omath
+import "core:c"
+
+helper :: proc(a: i32) -> i32 { return a }
+
+@(export)
+oadd :: proc "c" (a, b: c.int) -> c.int { return a + b }
+
+@(export, link_name="o_fill")
+fill :: proc "c" (buf: [^]u8, n: c.size_t, ctx: rawptr) {}
+
+@export
+default_cc :: proc(a: i32) -> i32 { return a }
+
+@(export)
+takes_slice :: proc "c" (s: []u8) -> int { return len(s) }
+"#;
+        let out = synthesize(Language::Odin, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int oadd(int a, int b);"), "{h}");
+        assert!(
+            h.contains("void o_fill(uint8_t * buf, size_t n, void * ctx);"),
+            "{h}"
+        );
+        for absent in ["helper", "default_cc", "takes_slice("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("takes_slice")));
     }
 }

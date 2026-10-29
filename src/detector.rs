@@ -248,13 +248,14 @@ impl Language {
                 args
             }
             Language::Odin => {
-                // Odin compiles to object files
+                // `-build-mode:obj` writes one object per package (runtime included), not the
+                // single object requested, so Odin builds a static archive instead.
                 let mut args = vec![
                     "build".to_string(),
                     input.to_string(),
                     "-file".to_string(),
                     format!("-out:{output}"),
-                    "-build-mode:obj".to_string(),
+                    "-build-mode:static".to_string(),
                 ];
                 if let Some(pic) = Self::pic_odin_reloc() {
                     args.push(pic.to_string());

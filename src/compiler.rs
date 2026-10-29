@@ -255,7 +255,7 @@ fn compile_inner(
     if language == Language::ScriptC {
         crate::scriptc::configure_command(&mut command);
     }
-    if language == Language::Nim {
+    if matches!(language, Language::Nim | Language::Odin) {
         prefer_system_archiver(&mut command, &output_dir)?;
     }
     let output = command.output()?;
@@ -309,9 +309,9 @@ fn compile_inner(
     })
 }
 
-/// Nim archives `--app:staticlib` output with whatever `ar` is first on `PATH`. On macOS a
+/// Nim and Odin archive static libraries with whatever `ar` is first on `PATH`. On macOS a
 /// Homebrew GNU binutils `ar` there writes archives Apple's linker rejects ("member not 8-byte
-/// aligned"), so Nim gets a private `PATH` entry whose `ar` is the system one.
+/// aligned"), so they get a private `PATH` entry whose `ar` is the system one.
 fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::Result<()> {
     let system_ar = Path::new("/usr/bin/ar");
     if !cfg!(target_os = "macos") || !system_ar.is_file() {
@@ -338,12 +338,10 @@ fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::
 
 fn artifact_filename(language: Language, stem: &str) -> String {
     match language {
-        Language::C
-        | Language::Cpp
-        | Language::Zig
-        | Language::D
-        | Language::Odin
-        | Language::Hare => format!("{stem}.o"),
+        Language::C | Language::Cpp | Language::Zig | Language::D | Language::Hare => {
+            format!("{stem}.o")
+        }
+        Language::Odin => format!("lib{stem}.a"),
         Language::V => format!("{stem}.c"),
         // rustc's `-l static=<name>` / `-l dylib=<name>` only finds `lib<name>.<ext>` on Unix, so
         // archives and shared libraries carry the `lib` prefix `emit_cargo_link` strips again.

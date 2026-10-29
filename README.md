@@ -139,7 +139,7 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 | **C++** | `clang++`/`g++` | object, linked | **synthesized** from `extern "C"` definitions (single or `extern "C" { … }` blocks); signatures must use C types |
 | **Zig** | `zig` | object (`build-obj -OReleaseFast -fPIC`), linked | **synthesized** from `export fn`s (`c_int`…, `iN`/`uN`, `isize`/`usize`, floats, `bool`, `*T`/`[*]T`/`[*c]T`/`?*anyopaque`; slices are skipped). Zig's own `-femit-h` writes nothing in current releases |
 | **D** | `ldc2`/`dmd`/`gdc` | object, linked | **generated** from the compiler's `-HC` header for `extern(C)` functions and structs (`ldc2`/`dmd`; `gdc` has no `-HC`, so it needs `<stem>.h`) |
-| **Odin** | `odin` | object (`-build-mode:obj`), linked | sibling `<stem>.h` |
+| **Odin** | `odin` | `lib<stem>.a` (`-build-mode:static`), linked | **synthesized** from `@(export)` procs with the `"c"`/`"cdecl"` convention (`c.*` types, `iN`/`uN`, `int`/`uint`, floats, `bool`, `rawptr`, `cstring`, `^T`/`[^]T`; slices are skipped) |
 | **Hare** | `hare` | object (QBE, Linux only), linked | sibling `<stem>.h` |
 | **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | **synthesized** from `{.exportc.}` procs (C-compatible types: `cint`…, `intN`/`uintN`, floats, `bool`, `pointer`, `cstring`, `ptr T`, `var T`) |
 | **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed; otherwise **synthesized** from `#[no_mangle]`/`#[export_name]` `extern "C"` and `#[ffi]` functions with primitive and raw-pointer types |

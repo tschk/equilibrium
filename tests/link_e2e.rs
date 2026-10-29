@@ -197,3 +197,19 @@ fn zig_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn odin_source_without_a_header_links_through_load() {
+    if find_compiler(Language::Odin).is_none() {
+        eprintln!("skipping: odin not installed");
+        return;
+    }
+    build_and_run(
+        "omath",
+        "odin",
+        "package omath\nimport \"core:c\"\n\n\
+         twice :: proc \"c\" (v: c.int) -> c.int { return v * 2 }\n\n\
+         @(export)\nomath_add :: proc \"c\" (a, b: c.int) -> c.int { return twice(a + b) / 2 }\n",
+        None,
+    );
+}
