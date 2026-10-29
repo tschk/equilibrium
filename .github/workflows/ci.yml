@@ -7,6 +7,11 @@ on:
   # otherwise report no checks at all, which reads as passing.
   pull_request:
 
+# A newer push to the same PR (or branch) cancels its superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
