@@ -556,6 +556,33 @@ fn generate_header(
             }
             Err(CompileError::UnsupportedCOutput { language })
         }
+        Language::D => {
+            // ldc2 and dmd write a C++ header for the `extern(C)` surface with `-HC`; gdc has no
+            // equivalent. `-o-` skips code generation, which `compile_inner` already did.
+            let compiler = find_compiler(Language::D)
+                .and_then(|info| info.compiler_path)
+                .ok_or(CompileError::UnsupportedCOutput { language })?;
+            let hc = output_dir.join(format!("{stem}.hc.h"));
+            let output = Command::new(&compiler)
+                .arg("-o-")
+                .arg(format!("-HCf={}", hc.display()))
+                .arg(input)
+                .output()?;
+            let text = std::fs::read_to_string(&hc)
+                .ok()
+                .filter(|_| output.status.success());
+            let _ = std::fs::remove_file(&hc);
+            match text
+                .as_deref()
+                .and_then(crate::header_synth::d_header_from_hc)
+            {
+                Some(header) => {
+                    std::fs::write(&header_path, header)?;
+                    Ok(header_path)
+                }
+                None => Err(CompileError::UnsupportedCOutput { language }),
+            }
+        }
         Language::V => {
             // V generates headers automatically with -backend c
             // The header should be alongside the C file

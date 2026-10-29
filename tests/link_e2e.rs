@@ -133,3 +133,22 @@ fn cpp_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn d_source_without_a_header_links_through_load() {
+    let Some(info) = find_compiler(Language::D) else {
+        eprintln!("skipping: no D compiler");
+        return;
+    };
+    if info.compiler.as_deref() == Some("gdc") {
+        eprintln!("skipping: gdc has no -HC header output");
+        return;
+    }
+    build_and_run(
+        "dmath",
+        "d",
+        "module dmath;\nint helper(int a) { return a; }\n\
+         extern(C) int dmath_add(int a, int b) { return helper(a) + b; }\n",
+        None,
+    );
+}
