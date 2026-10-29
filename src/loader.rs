@@ -190,6 +190,12 @@ pub fn load_with_options<S: AsRef<Path>>(
     })?;
 
     if options.compile {
+        if lang == Language::CSharp {
+            return Err(LoadError::CompilationFailed(
+                lang,
+                crate::compiler::CompileError::UnsupportedCOutput { language: lang }.to_string(),
+            ));
+        }
         find_compiler(lang).ok_or(LoadError::CompilerNotFound(lang))?;
         validate_extra_args(&options.compile_args)
             .map_err(|e| LoadError::CompilationFailed(lang, e.to_string()))?;
@@ -401,13 +407,37 @@ fn emit_cargo_link(
                 println!("cargo:rustc-link-lib=static={libname}");
             }
         }
-        "so" | "dylib" | "dll" => {
+        "so" | "dylib" => {
             if let (Some(dir), Some(stem)) = (output_path.parent(), output_path.file_stem()) {
                 let stem = stem.to_string_lossy();
                 let libname = stem.strip_prefix("lib").unwrap_or(&stem);
                 println!("cargo:rustc-link-search=native={}", dir.display());
                 println!("cargo:rustc-link-lib=dylib={libname}");
+                // The library is not installed anywhere the loader searches, so the binary
+                // records where it was built; without this it links but fails to start.
+                println!("cargo:rustc-link-arg=-Wl,-rpath,{}", dir.display());
             }
+        }
+        "dll" => {
+            if let (Some(dir), Some(name)) = (output_path.parent(), output_path.file_name()) {
+                // rustc writes a cdylib's import library as `<name>.dll.lib`, which
+                // `-l dylib=<name>.dll` resolves. The DLL must sit beside the executable or on PATH.
+                println!("cargo:rustc-link-search=native={}", dir.display());
+                println!("cargo:rustc-link-lib=dylib={}", name.to_string_lossy());
+                warnings.push(format!(
+                    "{} must be copied beside the executable or put on PATH to run",
+                    output_path.display()
+                ));
+            }
+        }
+        "c" => {
+            // V's `-backend c` output is a whole program (runtime and `main`), not a library;
+            // handing it to the linker would compile a second `main` into the binary.
+            warnings.push(format!(
+                "{} is C source, not a linkable library; it was not linked",
+                output_path.display()
+            ));
+            return Ok(());
         }
         _ => {
             println!("cargo:rustc-link-arg={}", output_path.display());

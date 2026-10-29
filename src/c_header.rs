@@ -8,6 +8,9 @@ pub(crate) struct ParsedHeader {
     pub(crate) enums: Vec<EnumDef>,
     pub(crate) functions: Vec<FunctionDef>,
     pub(crate) defines: Vec<DefineConst>,
+    /// Function-like declarations that were not bound, with the reason, so callers can warn
+    /// instead of silently emitting a declaration with the wrong arity.
+    pub(crate) skipped: Vec<String>,
 }
 
 /// An object-like `#define` whose body is an integer literal, emitted as a `pub const`.
@@ -112,6 +115,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     let mut enums = Vec::new();
     let mut functions = Vec::new();
     let mut defines = Vec::new();
+    let mut skipped = Vec::new();
 
     let mut i = 0;
     let stripped = strip_c_comments(content);
@@ -220,8 +224,12 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
             && line.contains('(')
             && (line.ends_with(';') || line.ends_with('{'))
         {
-            if let Some(func) = parse_function_line(line) {
-                functions.push(func);
+            match parse_function_line(line) {
+                Some(func) => functions.push(func),
+                None => skipped.push(format!(
+                    "Skipped declaration `{line}`: its parameter list could not be parsed \
+                     (function-pointer and variadic parameters are not supported)"
+                )),
             }
         }
 
@@ -235,6 +243,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
         enums,
         functions,
         defines,
+        skipped,
     }
 }
 
@@ -595,6 +604,96 @@ pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
     }
 }
 
+/// Split a parameter list at commas that are not nested inside parentheses or brackets, so a
+/// function-pointer parameter `void (*cb)(int, int)` stays one item.
+fn split_top_level_commas(list: &str) -> Vec<&str> {
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut items = Vec::new();
+    for (index, ch) in list.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(&list[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(&list[start..]);
+    items
+}
+
+/// Words that can only be part of a C type, never a parameter name.
+fn is_c_type_word(word: &str) -> bool {
+    matches!(
+        word,
+        "void"
+            | "char"
+            | "short"
+            | "int"
+            | "long"
+            | "float"
+            | "double"
+            | "signed"
+            | "unsigned"
+            | "_Bool"
+            | "bool"
+            | "size_t"
+            | "ssize_t"
+            | "ptrdiff_t"
+            | "intptr_t"
+            | "uintptr_t"
+            | "wchar_t"
+            | "int8_t"
+            | "int16_t"
+            | "int32_t"
+            | "int64_t"
+            | "uint8_t"
+            | "uint16_t"
+            | "uint32_t"
+            | "uint64_t"
+    )
+}
+
+/// Parse one parameter, named (`int code`) or unnamed (`int`, `const char *`, `struct node *`).
+/// Unnamed parameters get a positional `arg<N>` name so the binding keeps the declared arity.
+/// Returns `None` for shapes this parser does not understand (function pointers, varargs).
+fn parse_param(param: &str, index: usize) -> Option<(String, String)> {
+    let param = param.trim();
+    if param.is_empty() || param == "..." || param.contains('(') {
+        return None;
+    }
+    let positional = || format!("arg{index}");
+    match parse_c_field(param) {
+        Some((typ, name)) => {
+            // `unsigned int` or `struct node` parse as a type plus a "name"; when that name is
+            // itself a type word, or the "type" is only qualifiers/tags, the parameter is unnamed.
+            let base = typ.split('[').next().unwrap_or("").trim();
+            let only_tags = base
+                .split_whitespace()
+                .all(|w| matches!(w, "const" | "volatile" | "struct" | "enum" | "union"));
+            if is_c_type_word(&name) || only_tags {
+                let (head, dims) = split_array_dims(param).unwrap_or((param.to_string(), vec![]));
+                let mut typ = head.trim().to_string();
+                for dim in dims {
+                    typ.push_str(&format!("[{dim}]"));
+                }
+                Some((typ, positional()))
+            } else {
+                Some((typ, name))
+            }
+        }
+        // `int`, `size_t`, `char *`, `const char *` — no trailing identifier after the type.
+        None => {
+            let ends_in_ident = param.ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_');
+            let ends_in_type = param.ends_with('*') || param.ends_with(']');
+            (ends_in_ident || ends_in_type).then(|| (param.to_string(), positional()))
+        }
+    }
+}
+
 pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
     let line = strip_c_comments(line);
     let line = line
@@ -622,20 +721,22 @@ pub(crate) fn parse_function_line(line: &str) -> Option<FunctionDef> {
         return_type = format!("{return_type} {stars}");
     }
 
-    let params: Vec<(String, String)> = if params_str.trim() == "void" || params_str.is_empty() {
-        Vec::new()
-    } else {
-        params_str
-            .split(',')
-            .filter_map(|p| {
-                let (typ, name) = parse_c_field(p)?;
+    let params: Vec<(String, String)> =
+        if params_str.trim() == "void" || params_str.trim().is_empty() {
+            Vec::new()
+        } else {
+            let mut params = Vec::new();
+            for (index, param) in split_top_level_commas(params_str).into_iter().enumerate() {
                 // A C array parameter decays to a pointer to its element type, so the outermost
                 // dimension becomes `*` (`const int values[]` -> `const int *`, `int m[4][4]` ->
-                // pointer to `int[4]`). Non-array params pass through unchanged.
-                Some((decay_param_type(&typ), name))
-            })
-            .collect()
-    };
+                // pointer to `int[4]`). Non-array params pass through unchanged. Any parameter
+                // that cannot be parsed rejects the whole declaration: emitting it with fewer
+                // parameters would bind a different ABI.
+                let (typ, name) = parse_param(param, index)?;
+                params.push((decay_param_type(&typ), name));
+            }
+            params
+        };
 
     Some(FunctionDef {
         name,
@@ -730,6 +831,14 @@ pub(crate) fn c_type_to_rust(c_type: &str) -> String {
                 "*mut c_void".to_string()
             } else if inner == "const void" {
                 "*const c_void".to_string()
+            } else if is_opaque_pointee(inner.strip_prefix("const ").unwrap_or(inner)) {
+                // A pointer to a type the mapping cannot name (`struct node *`) is an opaque
+                // pointer, not a pointer to the `*mut c_void` catch-all (`*mut *mut c_void`).
+                if inner.starts_with("const ") {
+                    "*const c_void".to_string()
+                } else {
+                    "*mut c_void".to_string()
+                }
             } else if let Some(pointee) = inner.strip_prefix("const ") {
                 let pointee = pointee.trim();
                 if pointee.ends_with('*') {
@@ -749,6 +858,11 @@ pub(crate) fn c_type_to_rust(c_type: &str) -> String {
     }
 }
 
+fn is_opaque_pointee(pointee: &str) -> bool {
+    let pointee = pointee.trim();
+    !pointee.ends_with('*') && !pointee.contains('[') && c_type_to_rust(pointee) == "*mut c_void"
+}
+
 pub(crate) fn c_type_to_rust_checked(c_type: &str) -> Result<String, String> {
     let mapped = c_type_to_rust(c_type);
     let trimmed = c_type.trim();
@@ -758,10 +872,26 @@ pub(crate) fn c_type_to_rust_checked(c_type: &str) -> Result<String, String> {
         && !trimmed.ends_with("void *")
         && !trimmed.ends_with("void*")
         && !is_known_or_ident_type(trimmed)
+        && !is_tagged_pointer(trimmed)
     {
         return Err(format!("unsupported C type `{trimmed}`"));
     }
     Ok(mapped)
+}
+
+/// `struct node *` / `const union u *`: a pointer to a tagged type, bound as an opaque pointer.
+/// A tagged type by value is not accepted here; its layout is unknown to the mapping.
+fn is_tagged_pointer(c_type: &str) -> bool {
+    let normalized = strip_ignored_qualifiers(c_type);
+    let Some(pointee) = normalized.trim().strip_suffix('*') else {
+        return false;
+    };
+    let pointee = pointee.trim();
+    let pointee = pointee.strip_prefix("const ").unwrap_or(pointee).trim();
+    ["struct ", "union ", "enum "]
+        .iter()
+        .find_map(|prefix| pointee.strip_prefix(prefix))
+        .is_some_and(|tag| is_c_identifier(tag.trim()))
 }
 
 fn is_known_or_ident_type(c_type: &str) -> bool {

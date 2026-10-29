@@ -186,11 +186,15 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=foreign-code/nim_module.nim");
 
-    // ── V module (when v is on PATH) ───────────────────────────────────────
-    // V's runtime-heavy object cannot link cleanly into Rust's PIE binary on
-    // Linux. We detect V availability and compile a C shim with the same
-    // exported symbols so the FFI calls work and has_v is set.
-    if find_bin(
+    // ── V module (when v is on PATH, Unix hosts) ──────────────────────────
+    // V's `main`-module object drags its runtime into Rust's PIE link, so the
+    // module is built as a shared library (`v -shared -gc none`, non-main
+    // module) and linked as a dylib with an rpath to where it was built.
+    let unix = std::env::var("CARGO_CFG_TARGET_FAMILY").is_ok_and(|f| f == "unix");
+    // `v -shared` has no target flag here, so it builds for the host; skip it when cross-compiling
+    // rather than emit a host-architecture library the target linker would reject.
+    let host_is_target = std::env::var("HOST").ok() == std::env::var("TARGET").ok();
+    if let Some(v) = find_bin(
         "v",
         &[
             "/home/linuxbrew/.linuxbrew/bin/v",
@@ -198,15 +202,32 @@ fn main() {
             "/opt/homebrew/bin/v",
         ],
     )
-    .is_some()
+    .filter(|_| unix && host_is_target)
     {
-        cc::Build::new()
-            .file(foreign.join("v_module_shim.c"))
-            .compile("v_module");
-        println!("cargo:rustc-cfg=has_v");
+        let lib_dir = out_dir.join("v_lib");
+        std::fs::create_dir_all(&lib_dir).expect("create V output dir");
+        let macos = std::env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos");
+        let lib = lib_dir.join(if macos {
+            "libv_module.dylib"
+        } else {
+            "libv_module.so"
+        });
+        let status = Command::new(&v)
+            .args(["-shared", "-gc", "none", "-o"])
+            .arg(&lib)
+            .arg(foreign.join("v_module.v"))
+            .status();
+        let built = lib.exists();
+        if status.map(|s| s.success()).unwrap_or(false) && built {
+            println!("cargo:rustc-link-search=native={}", lib_dir.display());
+            println!("cargo:rustc-link-lib=dylib=v_module");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{}", lib_dir.display());
+            println!("cargo:rustc-cfg=has_v");
+        } else {
+            println!("cargo:warning=v found but `v -shared` failed; V row disabled");
+        }
     }
     println!("cargo:rerun-if-changed=foreign-code/v_module.v");
-    println!("cargo:rerun-if-changed=foreign-code/v_module_shim.c");
 
     // ── D module (when ldc2 is on PATH) ───────────────────────────────────
     if let Some(ldc2) = find_bin(

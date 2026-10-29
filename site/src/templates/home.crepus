@@ -19,7 +19,7 @@ div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mo
 					span text-purple-400
 						"one call"
 				p text-zinc-400 leading-relaxed max-w-2xl mb-7
-					"Point equilibrium at a source file — V, Zig, C, C++, C#, Rust, D, Nim, Odin, Hare, or TypeScript — and it detects the language, compiles it to C, and loads the result. Rust bindings come out the same door."
+					"Point equilibrium at a source file — Zig, C, C++, Rust, D, Nim, Odin, Hare, or TypeScript — and it detects the language, compiles it to a C-ABI artifact, and links it. Rust bindings come from a C header: generated for TypeScript (and Rust with cbindgen), hand-written for the rest."
 				div flex flex-wrap items-center gap-3 mb-10
 					a href="https://github.com/tschk/equilibrium" inline-flex items-center gap-2 rounded-md bg-purple-500 hover:bg-purple-400 text-zinc-950 text-xs font-semibold px-4 py-2.5 no-underline transition-colors target="_blank" rel="noopener noreferrer"
 						"Get started"
@@ -61,7 +61,7 @@ div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mo
 				h2 block text-[11px] uppercase tracking-[0.2em] text-zinc-500 mb-4
 					"Languages"
 				p block text-zinc-400 max-w-2xl mb-5
-					"Producers compile to the C ABI. Consumers take any C header and generate in-process FFI declarations. scriptc does both directions."
+					"Producers compile to the C ABI. Consumers take any C header and generate in-process FFI declarations (C# is consumer-only; V needs a manual `v -shared` build). scriptc does both directions."
 				div flex flex-wrap gap-2 mb-6
 					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
 						"V"
@@ -71,8 +71,6 @@ div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mo
 						"C"
 					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
 						"C++"
-					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
-						"C#"
 					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
 						"Rust"
 					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300

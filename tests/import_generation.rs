@@ -149,6 +149,38 @@ fn pointer_returns_keep_a_c_identifier_name() {
     );
 }
 
+#[test]
+fn unnamed_parameters_keep_their_arity_and_unparseable_ones_are_reported() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("proto.h");
+    std::fs::write(
+        &header,
+        "int add(int, int);\n\
+         unsigned int mask(unsigned int, const char *);\n\
+         void tag(struct node *, size_t);\n\
+         void tag_restrict(struct node *restrict n);\n\
+         void on(void (*cb)(int, int), void *ctx);\n",
+    )
+    .unwrap();
+
+    let rust = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap();
+    assert_contains(&rust, "pub fn add(arg0: c_int, arg1: c_int) -> c_int;");
+    assert_contains(
+        &rust,
+        "pub fn mask(arg0: c_uint, arg1: *const c_char) -> c_uint;",
+    );
+    assert_contains(&rust, "pub fn tag(arg0: *mut c_void, arg1: usize);");
+    assert_contains(&rust, "pub fn tag_restrict(n: *mut c_void);");
+    assert!(!rust.code.contains("pub fn on("), "{}", rust.code);
+    assert!(
+        rust.warnings
+            .iter()
+            .any(|warning| warning.contains("`void on(") && warning.contains("parameter")),
+        "a declaration whose parameters cannot be parsed must be reported, not emitted short: {:?}",
+        rust.warnings
+    );
+}
+
 fn assert_contains(generated: &GeneratedImport, needle: &str) {
     assert!(
         generated.code.contains(needle),
