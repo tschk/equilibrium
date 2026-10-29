@@ -316,9 +316,12 @@ fn prefer_system_archiver(command: &mut Command, output_dir: &Path) -> std::io::
     std::fs::create_dir_all(&tools)?;
     let link = tools.join("ar");
     if std::fs::read_link(&link).ok().as_deref() != Some(system_ar) {
-        // Create under a per-process name and rename over the target: rename is atomic, so
-        // concurrent builds sharing an output dir never observe or race on a half-made link.
-        let staged = tools.join(format!("ar.{}", std::process::id()));
+        // Create under a name unique to this call (process id + counter: `compile_batch` runs
+        // several of these on threads of one process) and rename over the target. Rename is
+        // atomic, so concurrent builds sharing an output dir never race on a half-made link.
+        static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let call = STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staged = tools.join(format!("ar.{}.{call}", std::process::id()));
         let _ = std::fs::remove_file(&staged);
         #[cfg(unix)]
         std::os::unix::fs::symlink(system_ar, &staged)?;
@@ -585,6 +588,40 @@ pub fn compile_batch(
 
 #[cfg(test)]
 mod tests {
+
+    /// `compile_batch` compiles on threads of one process, so archiver setup must not race
+    /// between threads sharing an output directory.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn archiver_setup_is_safe_across_threads_sharing_an_output_dir() {
+        use std::sync::{Arc, Barrier};
+        for _ in 0..50 {
+            let dir = tempfile::tempdir().unwrap();
+            let barrier = Arc::new(Barrier::new(8));
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| {
+                        let barrier = Arc::clone(&barrier);
+                        let dir = dir.path();
+                        scope.spawn(move || {
+                            barrier.wait();
+                            prefer_system_archiver(&mut Command::new("true"), dir)
+                        })
+                    })
+                    .collect();
+                for handle in handles {
+                    handle
+                        .join()
+                        .unwrap()
+                        .expect("archiver setup should not fail");
+                }
+            });
+            assert_eq!(
+                std::fs::read_link(dir.path().join(".eq-tools/ar")).unwrap(),
+                Path::new("/usr/bin/ar")
+            );
+        }
+    }
     use super::*;
     use crate::detector::find_compiler;
     use tempfile::tempdir;
