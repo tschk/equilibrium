@@ -147,6 +147,8 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 | **V (Vlang)** | `v` | `-backend c` C source; **not linked** (it is a whole program, not a library) | sibling `<stem>.h` |
 | **C#** | — | **not supported as a source**: `csc` makes a managed assembly and Native AOT is not implemented | — (C# works as a consumer: P/Invoke imports) |
 
+**Platforms.** The end-to-end link tests build a consumer crate whose `build.rs` calls `load()`, link it and run it. They run on **Linux and macOS** only. On **Windows**, CI runs the unit tests, but `load()`'s compile-and-link path is never exercised. For languages that produce a shared library, `load()` links against the import library, and **the `.dll` itself is the caller's responsibility to deploy**: copy it beside the executable or put its directory on `PATH`. `load()` does not copy it. Instead it adds a warning to `LoadedModule::warnings` saying where the DLL is.
+
 The C header parser understands named and unnamed parameters, pointers, arrays, enums, structs, unions and function-pointer typedefs. A declaration it cannot parse (for example a parameter that is itself a function pointer, or `...`) is left out and reported in `warnings` rather than bound with the wrong arity.
 
 ### scriptc (TypeScript) notes
