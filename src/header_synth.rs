@@ -31,6 +31,7 @@ pub(crate) fn synthesize(language: Language, source: &str) -> Option<Synthesized
         Language::C => (c_functions(source), c_type, c_type_declarations(source)),
         Language::Cpp => (c_functions(&extern_c_items(source)), c_type, String::new()),
         Language::Nim => (nim_functions(source), nim_type, String::new()),
+        Language::Rust => (rust_functions(source), rust_type, String::new()),
         _ => return None,
     };
     render(language, functions, map, &prelude)
@@ -50,7 +51,7 @@ fn render(
             Some(ty) => match map(ty) {
                 Some(c) => c,
                 None => {
-                    warnings.push(unmapped(language, &function.symbol, "return type", ty));
+                    warnings.push(unmapped(language, &function.symbol, "return", ty));
                     continue;
                 }
             },
@@ -355,9 +356,9 @@ fn signature_text(lines: &[&str], start: usize, stop: char) -> String {
     for line in &lines[start..] {
         for ch in line.chars() {
             match ch {
+                c if c == stop && depth == 0 => return text,
                 '(' | '[' | '{' => depth += 1,
                 ')' | ']' | '}' => depth -= 1,
-                c if c == stop && depth == 0 => return text,
                 _ => {}
             }
             text.push(ch);
@@ -494,6 +495,132 @@ fn nim_type(ty: &str) -> Option<String> {
     )
 }
 
+// ── Rust ───────────────────────────────────────────────────────────────────
+
+/// `extern "C"` functions with an unmangled symbol: `#[no_mangle]` / `#[unsafe(no_mangle)]`,
+/// `#[export_name = "…"]`, or equilibrium-rust's `#[ffi]` (which adds both). Used when
+/// `cbindgen` is not installed; it covers primitive and pointer signatures.
+fn rust_functions(source: &str) -> Vec<ForeignFn> {
+    let text = strip_c_comments(source);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = Vec::new();
+    let mut unmangled = false;
+    let mut ffi = false;
+    let mut export_name = None;
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[") {
+            let attr = trimmed.replace(' ', "");
+            unmangled |= attr.contains("no_mangle");
+            ffi |= attr == "#[ffi]" || attr.ends_with("::ffi]");
+            if let Some(name) = attr.split("export_name=\"").nth(1) {
+                export_name = name.split('"').next().map(str::to_string);
+                unmangled = true;
+            }
+            continue;
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        let is_fn = trimmed.contains("fn ") && !trimmed.starts_with("//");
+        if is_fn && ((unmangled && trimmed.contains("extern \"C\"")) || ffi) {
+            let signature = signature_text(&lines, index, '{');
+            if let Some(function) = rust_signature(&signature, export_name.take()) {
+                out.push(function);
+            }
+        }
+        unmangled = false;
+        ffi = false;
+        export_name = None;
+    }
+    out
+}
+
+fn rust_signature(signature: &str, export_name: Option<String>) -> Option<ForeignFn> {
+    let after_fn = signature.split_once("fn ")?.1;
+    let name_end = after_fn.find(|c: char| !(c.is_alphanumeric() || c == '_'))?;
+    let (params, after) = parenthesized(after_fn)?;
+    let mut parsed = Vec::new();
+    for (index, param) in split_top_level_commas(params).into_iter().enumerate() {
+        let param = param.trim();
+        if param.is_empty() {
+            continue;
+        }
+        let (pattern, ty) = param.split_once(':')?;
+        let name = pattern.trim().trim_start_matches("mut ").trim();
+        let name = if name.starts_with('_') || !crate::c_header::is_c_identifier(name) {
+            format!("arg{index}")
+        } else {
+            name.to_string()
+        };
+        parsed.push((name, ty.trim().to_string()));
+    }
+    let ret = after
+        .split("where")
+        .next()
+        .and_then(|head| head.trim().strip_prefix("->"))
+        .map(|ty| ty.trim().to_string())
+        .filter(|ty| ty != "()");
+    Some(ForeignFn {
+        symbol: export_name.unwrap_or_else(|| after_fn[..name_end].to_string()),
+        params: parsed,
+        ret,
+    })
+}
+
+fn rust_type(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if let Some(inner) = ty.strip_prefix("*const ") {
+        return rust_pointee(inner).map(|c| pointer_to(&c, true));
+    }
+    if let Some(inner) = ty.strip_prefix("*mut ") {
+        return rust_pointee(inner).map(|c| pointer_to(&c, false));
+    }
+    let ty = ["std::os::raw::", "core::ffi::", "std::ffi::", "libc::"]
+        .iter()
+        .find_map(|prefix| ty.strip_prefix(prefix))
+        .unwrap_or(ty);
+    Some(
+        match ty {
+            "i8" => "int8_t",
+            "i16" => "int16_t",
+            "i32" => "int32_t",
+            "i64" => "int64_t",
+            "u8" => "uint8_t",
+            "u16" => "uint16_t",
+            "u32" => "uint32_t",
+            "u64" => "uint64_t",
+            "isize" => "intptr_t",
+            "usize" => "size_t",
+            "f32" | "c_float" => "float",
+            "f64" | "c_double" => "double",
+            "bool" => "bool",
+            "c_int" => "int",
+            "c_uint" => "unsigned int",
+            "c_long" => "long",
+            "c_ulong" => "unsigned long",
+            "c_longlong" => "long long",
+            "c_ulonglong" => "unsigned long long",
+            "c_short" => "short",
+            "c_ushort" => "unsigned short",
+            "c_char" => "char",
+            "c_schar" => "signed char",
+            "c_uchar" => "unsigned char",
+            _ => return None,
+        }
+        .to_string(),
+    )
+}
+
+/// A pointee may also be `c_void` or another pointer.
+fn rust_pointee(ty: &str) -> Option<String> {
+    let ty = ty.trim();
+    if ty.ends_with("c_void") {
+        return Some("void".to_string());
+    }
+    rust_type(ty)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,5 +747,44 @@ proc bad*(s: string): cint {.exportc.} = 0
             "{:?}",
             out.warnings
         );
+    }
+
+    #[test]
+    fn rust_header_maps_unmangled_extern_c_functions() {
+        let source = r#"
+use std::os::raw::{c_char, c_void};
+fn private(a: i32) -> i32 { a }
+#[no_mangle]
+pub extern "C" fn radd(a: i32, b: i32) -> i32 { a + b }
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn rfill(
+    out: *mut u8,
+    len: usize,
+    _ctx: *mut c_void,
+) {}
+#[export_name = "r_label"]
+pub extern "C" fn label(name: *const c_char) -> *const c_char { name }
+#[ffi]
+pub fn scale(v: f64, times: u32) -> f64 { v * times as f64 }
+pub extern "C" fn mangled_by_default(a: i32) -> i32 { a }
+#[no_mangle]
+pub extern "C" fn takes_string(s: String) {}
+"#;
+        let out = synthesize(Language::Rust, source).expect("header");
+        let h = &out.header;
+        assert!(h.contains("int32_t radd(int32_t a, int32_t b);"), "{h}");
+        assert!(
+            h.contains("void rfill(uint8_t * out, size_t len, void * arg2);"),
+            "{h}"
+        );
+        assert!(
+            h.contains("const char * r_label(const char * name);"),
+            "{h}"
+        );
+        assert!(h.contains("double scale(double v, uint32_t times);"), "{h}");
+        for absent in ["private", "mangled_by_default", "takes_string("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("takes_string")));
     }
 }

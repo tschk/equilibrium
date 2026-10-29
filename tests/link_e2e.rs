@@ -167,3 +167,18 @@ fn nim_source_without_a_header_links_through_load() {
         None,
     );
 }
+
+#[test]
+fn rust_source_without_a_header_links_through_load() {
+    if find_compiler(Language::Rust).is_none() {
+        eprintln!("skipping: rustc not installed");
+        return;
+    }
+    build_and_run(
+        "rgen",
+        "rs",
+        "fn twice(v: i32) -> i32 { v * 2 }\n\
+         #[no_mangle]\npub extern \"C\" fn rgen_add(a: i32, b: i32) -> i32 { twice(a + b) / 2 }\n",
+        None,
+    );
+}

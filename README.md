@@ -142,7 +142,7 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 | **Odin** | `odin` | object (`-build-mode:obj`), linked | sibling `<stem>.h` |
 | **Hare** | `hare` | object (QBE, Linux only), linked | sibling `<stem>.h` |
 | **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | **synthesized** from `{.exportc.}` procs (C-compatible types: `cint`…, `intN`/`uintN`, floats, `bool`, `pointer`, `cstring`, `ptr T`, `var T`) |
-| **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed, else sibling `<stem>.h` |
+| **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed; otherwise **synthesized** from `#[no_mangle]`/`#[export_name]` `extern "C"` and `#[ffi]` functions with primitive and raw-pointer types |
 | **TypeScript/JavaScript** | `scriptc` | `lib<stem>.a` (library mode), linked | generated from `export function`s |
 | **V (Vlang)** | `v` | `-backend c` C source; **not linked** (it is a whole program, not a library) | sibling `<stem>.h` |
 | **C#** | — | **not supported as a source**: `csc` makes a managed assembly and Native AOT is not implemented | — (C# works as a consumer: P/Invoke imports) |
