@@ -93,6 +93,13 @@ pub struct GeneratedImport {
     pub companions: Vec<GeneratedCompanion>,
 }
 
+/// Generate consumer imports for a C header.
+///
+/// Nim, C#, D, Odin, and V imports do not currently represent pointers to aggregates whose
+/// layout could not be reconstructed. An included function that uses one causes generation to
+/// return an error; unsupported typedefs not used by included functions are omitted with warnings.
+/// Reconstructed consumers also reject array typedefs in parameter position because C adjusts
+/// those to pointers.
 pub fn generate_imports(
     header: &Path,
     language: Language,
@@ -108,11 +115,21 @@ pub fn generate_imports_from_parsed(
     parsed: &ParsedHeader,
     options: &ImportOptions,
 ) -> Result<GeneratedImport, String> {
+    if !binds_against_c_header(language) {
+        if let Some(name) = parsed.array_typedef_parameter(&options.allowlist_functions) {
+            return Err(format!(
+                "Cannot generate {language:?} imports: {name} has an array typedef parameter"
+            ));
+        }
+    }
     if language == Language::ScriptC {
         return generate_scriptc_imports(header, parsed, options);
     }
 
     if language == Language::Rust {
+        if let Some(callback) = parsed.unsafe_callback() {
+            return Err(format!("Cannot generate Rust imports: callback {callback} references an incomplete aggregate"));
+        }
         // Rust consumer bindings ARE the full FFI bindings: types (enums, opaque handles, structs)
         // plus the extern block. Reuse the one binding generator so no function is dropped for
         // referencing a header-declared type and the output is self-contained and compiles.
@@ -133,6 +150,30 @@ pub fn generate_imports_from_parsed(
         });
     }
 
+    let incomplete = parsed.incomplete_aggregates();
+    if maps_declared_types(language) {
+        let unsupported_pointer = |ty: &str| {
+            let resolved = resolve_consumer_alias(ty, parsed, 0);
+            resolved.contains('*')
+                && resolved
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|token| parsed.incomplete_by_value(token, &incomplete, 0))
+        };
+        for function in &parsed.functions {
+            if !options.allowlist_functions.is_empty()
+                && !options.allowlist_functions.contains(&function.name)
+            {
+                continue;
+            }
+            for ty in std::iter::once(&function.return_type)
+                .chain(function.params.iter().map(|(ty, _)| ty))
+            {
+                if unsupported_pointer(ty) {
+                    return Err(format!("Cannot generate {language:?} imports: {} uses a pointer to an incomplete aggregate", function.name));
+                }
+            }
+        }
+    }
     let declared_types = declared_import_types(parsed, language);
     let mut functions = Vec::new();
     let mut warnings = parsed.skipped.clone();
@@ -263,6 +304,7 @@ fn supports_mapping_field(language: Language, ty: &str, parsed: &ParsedHeader) -
 /// function-pointer alias cannot acquire an invented pointer mapping and slip through the gate.
 fn declared_import_types(parsed: &ParsedHeader, language: Language) -> HashSet<String> {
     let mut declared = HashSet::new();
+    let incomplete = parsed.incomplete_aggregates();
     for (kind, names) in [
         (
             "struct",
@@ -310,7 +352,8 @@ fn declared_import_types(parsed: &ParsedHeader, language: Language) -> HashSet<S
         let before = declared.len();
         for (kind, definitions) in [("struct", &parsed.structs), ("union", &parsed.unions)] {
             for definition in definitions {
-                if !definition.bitfields.is_empty()
+                if incomplete.contains(&definition.name)
+                    || !definition.bitfields.is_empty()
                     || (language == Language::V && definition.name.contains("__anon_"))
                     || !definition.fields.iter().all(|(ty, name)| {
                         is_c_identifier(name)
@@ -320,6 +363,10 @@ fn declared_import_types(parsed: &ParsedHeader, language: Language) -> HashSet<S
                 {
                     declared.remove(&definition.name);
                     declared.remove(&format!("{kind} {}", definition.name));
+                    if let Some(tag) = &definition.tag {
+                        declared.remove(tag);
+                        declared.remove(&format!("{kind} {tag}"));
+                    }
                 }
             }
         }
@@ -1209,6 +1256,7 @@ fn render_declared_types(language: Language, parsed: &ParsedHeader) -> String {
             .target
             .strip_prefix("struct ")
             .or_else(|| alias.target.strip_prefix("union "))
+            .filter(|tag| is_c_identifier(tag))
         {
             if emitted.insert(tag.to_string()) {
                 render_aggregate(&mut code, language, tag, &[], false);
@@ -1228,6 +1276,7 @@ fn render_declared_types(language: Language, parsed: &ParsedHeader) -> String {
                     .target
                     .strip_prefix("struct ")
                     .or_else(|| alias.target.strip_prefix("union "))
+                    .filter(|tag| is_c_identifier(tag))
                 {
                     let definition = parsed
                         .structs

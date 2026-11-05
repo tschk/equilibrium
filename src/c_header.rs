@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -29,12 +30,15 @@ pub(crate) struct TypedefDef {
     /// target cannot be expressed by the plain `c_type_to_rust` mapping. `None` for ordinary
     /// typedefs, which map through `target`.
     pub(crate) rust_override: Option<String>,
+    pub(crate) callback_decl: Option<FunctionDef>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct StructDef {
     pub(crate) name: String,
+    pub(crate) tag: Option<String>,
     pub(crate) fields: Vec<(String, String)>,
+    pub(crate) incomplete_fields: Vec<String>,
     /// Bitfield declarations indexed by their position amongst ordinary fields.
     pub(crate) bitfields: Vec<BitfieldDef>,
 }
@@ -58,6 +62,140 @@ pub(crate) struct FunctionDef {
     pub(crate) name: String,
     pub(crate) return_type: String,
     pub(crate) params: Vec<(String, String)>,
+}
+
+impl ParsedHeader {
+    pub(crate) fn array_typedef_parameter(&self, allowlist: &[String]) -> Option<&str> {
+        self.functions
+            .iter()
+            .filter(|function| allowlist.is_empty() || allowlist.contains(&function.name))
+            .chain(
+                self.typedefs
+                    .iter()
+                    .filter_map(|alias| alias.callback_decl.as_ref()),
+            )
+            .find(|function| {
+                function
+                    .params
+                    .iter()
+                    .any(|(ty, _)| self.is_array_alias(ty, 0))
+            })
+            .map(|function| function.name.as_str())
+    }
+
+    fn is_array_alias(&self, ty: &str, depth: usize) -> bool {
+        if depth > self.typedefs.len() {
+            return false;
+        }
+        if split_array_dims(ty).is_some() {
+            return true;
+        }
+        if ty.contains('*') {
+            return false;
+        }
+        let normalized = ty
+            .split_whitespace()
+            .filter(|word| {
+                !matches!(
+                    *word,
+                    "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" | "_Atomic"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.typedefs
+            .iter()
+            .find(|alias| alias.name == normalized && alias.rust_override.is_none())
+            .is_some_and(|alias| self.is_array_alias(&alias.target, depth + 1))
+    }
+
+    pub(crate) fn unsafe_callback(&self) -> Option<&str> {
+        let incomplete = self.incomplete_aggregates();
+        self.typedefs
+            .iter()
+            .find(|alias| alias.callback_decl.is_some() && incomplete.contains(&alias.name))
+            .map(|alias| alias.name.as_str())
+    }
+
+    pub(crate) fn incomplete_aggregates(&self) -> HashSet<String> {
+        let mut incomplete = HashSet::new();
+        loop {
+            let before = incomplete.len();
+            for (def, union) in self
+                .structs
+                .iter()
+                .map(|d| (d, false))
+                .chain(self.unions.iter().map(|d| (d, true)))
+            {
+                if !def.incomplete_fields.is_empty()
+                    || !crate::bindings::aggregate_layout_supported(def, union)
+                    || def
+                        .fields
+                        .iter()
+                        .any(|(ty, _)| self.incomplete_by_value(ty, &incomplete, 0))
+                {
+                    incomplete.insert(def.name.clone());
+                    if let Some(tag) = &def.tag {
+                        incomplete.insert(tag.clone());
+                    }
+                }
+            }
+            for alias in &self.typedefs {
+                if alias.callback_decl.as_ref().is_some_and(|decl| {
+                    self.incomplete_by_value(&decl.return_type, &incomplete, 0)
+                        || decl
+                            .params
+                            .iter()
+                            .any(|(ty, _)| self.incomplete_by_value(ty, &incomplete, 0))
+                }) {
+                    incomplete.insert(alias.name.clone());
+                }
+            }
+            if before == incomplete.len() {
+                return incomplete;
+            }
+        }
+    }
+
+    pub(crate) fn incomplete_by_value(
+        &self,
+        ty: &str,
+        incomplete: &HashSet<String>,
+        depth: usize,
+    ) -> bool {
+        if depth > self.typedefs.len() {
+            return false;
+        }
+        let ty = ty.trim();
+        if ty.contains('*') {
+            return false;
+        }
+        if let Some((base, _)) = split_array_dims(ty) {
+            return self.incomplete_by_value(&base, incomplete, depth + 1);
+        }
+        let normalized = ty
+            .split_whitespace()
+            .filter(|word| {
+                !matches!(
+                    *word,
+                    "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" | "_Atomic"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ty = normalized.as_str();
+        let name = ty
+            .strip_prefix("struct ")
+            .or_else(|| ty.strip_prefix("union "))
+            .unwrap_or(ty);
+        if incomplete.contains(name) {
+            return true;
+        }
+        self.typedefs
+            .iter()
+            .find(|alias| alias.name == ty && alias.rust_override.is_none())
+            .is_some_and(|alias| self.incomplete_by_value(&alias.target, incomplete, depth + 1))
+    }
 }
 
 /// Drop `/* … */` and `//` comments from C source text.
@@ -194,16 +332,24 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                             name: name.to_string(),
                             target: format!("{kind} {name}"),
                             rust_override: None,
+                            callback_decl: None,
                         });
                     }
                 }
             } else if line.ends_with(';') {
                 if line.contains("(*") {
                     if let Some((name, rust_type)) = parse_typedef_fnptr(line) {
+                        let callback_decl = parse_callback_signature(line, &name);
+                        if callback_decl.is_none() {
+                            skipped.push(format!("Skipped callback {name}: unsupported signature"));
+                            i += 1;
+                            continue;
+                        }
                         typedefs.push(TypedefDef {
                             name,
                             target: rust_type.clone(),
                             rust_override: Some(rust_type),
+                            callback_decl,
                         });
                     }
                 } else if let Some((target, name)) = parse_typedef_line(line) {
@@ -211,6 +357,7 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                         name,
                         target,
                         rust_override: None,
+                        callback_decl: None,
                     });
                 }
             }
@@ -336,17 +483,28 @@ pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
     let name = end_part.split_whitespace().last()?.to_string();
     let start = content.find('{')?;
     let end = content.rfind('}')?;
+    let tag = content[..start]
+        .trim()
+        .strip_prefix("typedef")
+        .unwrap_or(&content[..start])
+        .split_whitespace()
+        .nth(1)
+        .filter(|tag| is_c_identifier(tag))
+        .map(str::to_string);
     let fields_str = &content[start + 1..end];
 
     let mut fields = Vec::new();
     let mut bitfields = Vec::new();
+    let mut incomplete_fields = Vec::new();
     for field in aggregate_fields(fields_str) {
         let field = field.trim();
         if field.is_empty() || field.starts_with("//") {
             continue;
         }
 
-        if let Some((declaration, width)) = field.split_once(':') {
+        if field.contains(',') {
+            incomplete_fields.push(field.to_string());
+        } else if let Some((declaration, width)) = field.split_once(':') {
             let width = width.trim().parse().unwrap_or(usize::MAX);
             let (c_type, name) = match parse_c_field(declaration) {
                 Some((typ, name))
@@ -368,13 +526,17 @@ pub(crate) fn parse_typedef_struct(content: &str) -> Option<StructDef> {
             });
         } else if let Some((field_type, field_name)) = parse_c_field(field) {
             fields.push((field_type, field_name));
+        } else {
+            incomplete_fields.push(field.to_string());
         }
     }
 
     Some(StructDef {
         name,
+        tag,
         fields,
         bitfields,
+        incomplete_fields,
     })
 }
 
@@ -455,15 +617,16 @@ pub(crate) fn parse_typedef_enum(content: &str) -> Option<EnumDef> {
 
 /// The Rust type for a single C parameter, whether named (`int code`) or unnamed (`int`, `void *`).
 fn param_type_only(param: &str) -> Option<String> {
-    let param = param.trim();
-    if param.is_empty() {
-        return None;
-    }
-    let c_type = match parse_c_field(param) {
-        Some((typ, _name)) => decay_param_type(&typ),
-        None => decay_param_type(param),
-    };
+    let (typ, _) = parse_param(param, 0)?;
+    let c_type = decay_param_type(&typ);
     Some(c_type_to_rust(&c_type))
+}
+
+fn parse_callback_signature(line: &str, name: &str) -> Option<FunctionDef> {
+    let line = line.strip_prefix("typedef")?.trim();
+    let star = line.find("(*")?;
+    let close = line[star..].find(')')? + star;
+    parse_function_line(&format!("{} {}{}", &line[..star], name, &line[close + 1..]))
 }
 
 /// Parse a function-pointer typedef (`typedef RET (*NAME)(PARAMS);`) into its name and a
@@ -596,12 +759,7 @@ pub(crate) fn parse_typedef_line(line: &str) -> Option<(String, String)> {
     let line = line.strip_prefix("typedef")?.trim();
     let line = line.strip_suffix(';')?.trim();
 
-    let parts: Vec<&str> = line.rsplitn(2, ' ').collect();
-    if parts.len() == 2 {
-        Some((parts[1].to_string(), parts[0].to_string()))
-    } else {
-        None
-    }
+    parse_c_field(line)
 }
 
 /// Split a parameter list at commas that are not nested inside parentheses or brackets, so a
@@ -864,6 +1022,15 @@ fn is_opaque_pointee(pointee: &str) -> bool {
 }
 
 pub(crate) fn c_type_to_rust_checked(c_type: &str) -> Result<String, String> {
+    if let Some((base, dims)) = split_array_dims(c_type) {
+        c_type_to_rust_checked(&base)?;
+        if dims
+            .iter()
+            .any(|dim| !dim.is_empty() && dim.parse::<usize>().is_err())
+        {
+            return Err(format!("unsupported C array type `{c_type}`"));
+        }
+    }
     let mapped = c_type_to_rust(c_type);
     let trimmed = c_type.trim();
     if mapped == "*mut c_void"
