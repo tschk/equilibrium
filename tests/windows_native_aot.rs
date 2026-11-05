@@ -77,11 +77,18 @@ int main(int argc, char **argv) {
     )
     .unwrap();
     let executable = dir.path().join("consumer.exe");
+    assert!(header.is_file(), "synthesized header disappeared");
+    let canonical_dir = std::fs::canonicalize(dir.path()).unwrap();
+    let include_dir = header
+        .parent()
+        .unwrap()
+        .strip_prefix(&canonical_dir)
+        .unwrap();
     let compile = Command::new("cl.exe")
         .current_dir(dir.path())
         .arg("/nologo")
         .arg("/std:c11")
-        .arg(format!("/I{}", header.parent().unwrap().display()))
+        .arg(format!("/I{}", include_dir.display()))
         .arg(format!("/Fe:{}", executable.display()))
         .arg(&consumer)
         .output()
