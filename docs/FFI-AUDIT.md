@@ -4,6 +4,18 @@ This audit describes equilibrium at `206b4b67ddcc17a969d8b54442e41ae88617c265`. 
 
 Since this snapshot, binding generation has been hardened against several incomplete aggregate layouts and their by-value uses. This does not cover all layout-affecting syntax: packed attributes and packing directives still need target-aware handling. Some unsupported array and pointer typedefs are rejected instead of generating an ABI declaration.
 
+## Reproduced enum ABI mismatch
+
+At the pre-refusal revision [`3207fe5`](https://github.com/tschk/equilibrium/commit/3207fe5e375f847d6435f663d371b8f12fa55b26), the D consumer generator mapped `typedef enum Color { SMALL = 1, LARGE = 200 } Color` to `alias Color = int`. For `typedef struct Packet { Color color; char marker; int tail; } Packet`, a native call on x86-64 Linux with GCC 12.2.0 and LDC 1.30.0 showed an actual mismatch when the C library was built with `-fshort-enums`: C reported an enum size of 1 byte, a packet size of 8, and marker and tail offsets of 1 and 4; generated D reported 4, 12, 4, and 8 respectively. Passing `(200, 42, 77)` by value made C observe `(200, 0, 42)`. Without `-fshort-enums`, both reported 4, 12, 4, and 8, and the call observed the intended values.
+
+The generated D file required removing its first `core.stdc.stddef` import to compile with this LDC; the tested enum, struct, and function declarations were unchanged. This demonstrates incorrect old D **consumer** declarations in that configuration, not a failure of the D producer fixture or evidence about C#, Hare, or V. The current reconstructed-consumer path refuses enum-bearing headers rather than assuming their representation.
+
+## Previously unverified D producer fixtures
+
+At the same revision, two D **producer** fixtures from `d_rebuild_and_handwritten_sibling_header` were checked against their actual generated headers and unmodified generated Rust bindings on x86-64 Linux with LDC 1.30.0, GCC 12.2.0, and Rust 1.99.1. For `extern(C) int sample(int x)`, the generated header declared `int32_t sample(int32_t x)` and the Rust binding used `i32`; D, C, and Rust each reported size and alignment 4 and returned `-123456789` unchanged. For the equivalent `double` identity function, all three reported size and alignment 8 and returned `-123.25` unchanged. The compiler's own `-HC` header also declared the integer signature as `int32_t`. The old generator emitted no warnings despite unresolved standard includes in the synthesized header.
+
+These scalar fixtures matched on the tested toolchain: their prior output was **unproven, not shown wrong**, by this experiment. It does not establish correctness for other D types, compiler configurations, or the C#, Hare, and V producer paths. Current generation refuses the unresolved includes rather than assuming their effects.
+
 ## Priorities
 
 1. **Prevent partial aggregate layouts.** [`generate_struct` and `generate_union`](../src/bindings.rs) warn and continue when an ordinary field has an invalid name or unsupported type. The resulting definition can have the wrong size, alignment, or offsets. [`parse_typedef_struct`](../src/c_header.rs) can also omit fields that it cannot parse before generation sees them. Unsupported bitfield layouts have a separate rejection path, but that does not protect ordinary fields. Reject the whole aggregate when any field is lost, propagate that failure to by-value users, and test both parser and emitter failures against C layout probes.
