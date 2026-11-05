@@ -52,6 +52,32 @@ jobs:
       run: cargo clippy --all-targets --all-features -- -D warnings
       if: matrix.os == 'ubuntu-latest'
 
+  windows-native-aot:
+    name: Windows Native AOT C consumer
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v5
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: 8.0.x
+    - uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+    - name: Select .NET 8 and check tools
+      shell: pwsh
+      run: |
+        $sdk = dotnet --list-sdks | ForEach-Object { ($_ -split ' ')[0] } | Where-Object { $_ -match '^8\.0\.' } | Sort-Object { [version]$_ } | Select-Object -Last 1
+        if (-not $sdk) { throw '.NET 8 SDK is required' }
+        @{ sdk = @{ version = $sdk; rollForward = 'disable' } } | ConvertTo-Json | Set-Content global.json
+        dotnet --version
+        if ($LASTEXITCODE -ne 0) { throw 'dotnet failed' }
+        Get-Command cl.exe -ErrorAction Stop
+    - name: Run Native AOT probe
+      run: cargo test --all-features --test windows_native_aot -- --ignored --nocapture
+      env:
+        DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+
   compiler-detection:
     name: Compiler Detection
     runs-on: ${{ matrix.os }}
