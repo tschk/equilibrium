@@ -257,6 +257,9 @@ pub fn load_with_options<S: AsRef<Path>>(
     let mut imports = Vec::new();
     let mut warnings = export_discovery.warnings;
     warnings.extend(result.warnings.iter().cloned());
+    if let Some(binding) = &bindings {
+        warnings.extend(binding.warnings.iter().cloned());
+    }
     if options.generate_bindings && bindings.is_none() {
         warnings.push("no header found; bindings not generated".to_string());
     }
@@ -488,6 +491,25 @@ mod tests {
         );
         assert!(result.bindings_code().unwrap().contains("pub fn add("));
         assert!(!out.join("add.o").exists());
+    }
+
+    #[test]
+    fn load_reports_skipped_binding_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("api.c");
+        std::fs::write(&source, "void register_callback(void) {}\n").unwrap();
+        std::fs::write(
+            dir.path().join("api.h"),
+            "void register_callback(void (*callback)(int));\n",
+        )
+        .unwrap();
+
+        let result =
+            load_with_options(&source, LoadOptions::default().compile(false).link(false)).unwrap();
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("register_callback")));
     }
 
     #[test]

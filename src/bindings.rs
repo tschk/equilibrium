@@ -57,6 +57,16 @@ pub fn generate_bindings_from_content(
     options: &BindingOptions,
 ) -> Result<GeneratedBinding, String> {
     let parsed = parse_c_header(content);
+    if let Some(name) = parsed.array_typedef_parameter(&options.allowlist_functions) {
+        return Err(format!(
+            "Cannot generate bindings: {name} has an array typedef parameter"
+        ));
+    }
+    if let Some(callback) = parsed.unsafe_callback() {
+        return Err(format!(
+            "Cannot generate bindings: callback {callback} references an incomplete aggregate"
+        ));
+    }
     Ok(generate_bindings_from_parsed(header, &parsed, options))
 }
 
@@ -112,6 +122,7 @@ fn emit_bindings_from_parsed(
     warnings: &mut Vec<String>,
 ) {
     warnings.extend(parsed.skipped.iter().cloned());
+    let incomplete = parsed.incomplete_aggregates();
     for def in &parsed.defines {
         if should_include(&def.name, &options.allowlist_types) {
             if let Some(ident) = rust_ident(&def.name) {
@@ -136,7 +147,16 @@ fn emit_bindings_from_parsed(
 
     for struct_def in &parsed.structs {
         if should_include(&struct_def.name, &options.allowlist_types) {
-            if let Some(generated) = generate_struct(struct_def, options, warnings) {
+            let generated = if incomplete.contains(&struct_def.name) {
+                warnings.push(format!(
+                    "Opaque struct {}: incomplete field layout",
+                    struct_def.name
+                ));
+                generate_opaque_typedef(&struct_def.name, warnings)
+            } else {
+                generate_struct(struct_def, options, warnings)
+            };
+            if let Some(generated) = generated {
                 code.push_str(&generated);
                 code.push('\n');
             }
@@ -145,7 +165,16 @@ fn emit_bindings_from_parsed(
 
     for union_def in &parsed.unions {
         if should_include(&union_def.name, &options.allowlist_types) {
-            if let Some(generated) = generate_union(union_def, warnings) {
+            let generated = if incomplete.contains(&union_def.name) {
+                warnings.push(format!(
+                    "Opaque union {}: incomplete field layout",
+                    union_def.name
+                ));
+                generate_opaque_typedef(&union_def.name, warnings)
+            } else {
+                generate_union(union_def, warnings)
+            };
+            if let Some(generated) = generated {
                 code.push_str(&generated);
                 code.push('\n');
             }
@@ -154,16 +183,21 @@ fn emit_bindings_from_parsed(
 
     for typedef in &parsed.typedefs {
         if should_include(&typedef.name, &options.allowlist_types) {
+            if typedef.callback_decl.is_some() && incomplete.contains(&typedef.name) {
+                warnings.push(format!(
+                    "Skipped callback {}: incomplete aggregate in signature",
+                    typedef.name
+                ));
+                continue;
+            }
             let is_struct_alias = typedef.target.starts_with("struct ")
-                && parsed
-                    .structs
-                    .iter()
-                    .any(|s| format!("struct {}", s.name) == typedef.target);
+                && parsed.structs.iter().any(|s| {
+                    s.name == typedef.name && format!("struct {}", s.name) == typedef.target
+                });
             let is_union_alias = typedef.target.starts_with("union ")
-                && parsed
-                    .unions
-                    .iter()
-                    .any(|u| format!("union {}", u.name) == typedef.target);
+                && parsed.unions.iter().any(|u| {
+                    u.name == typedef.name && format!("union {}", u.name) == typedef.target
+                });
             let is_enum_alias = typedef.target.starts_with("enum ")
                 && parsed
                     .enums
@@ -173,8 +207,22 @@ fn emit_bindings_from_parsed(
                 let target = typedef.target.trim();
                 let opaque_tag = target
                     .strip_prefix("struct ")
-                    .or_else(|| target.strip_prefix("union "));
-                if opaque_tag.is_some() {
+                    .or_else(|| target.strip_prefix("union "))
+                    .filter(|tag| crate::c_header::is_c_identifier(tag));
+                let defined_tag = opaque_tag.and_then(|tag| {
+                    parsed
+                        .structs
+                        .iter()
+                        .chain(&parsed.unions)
+                        .find(|def| def.tag.as_deref() == Some(tag))
+                });
+                if let Some(definition) = defined_tag {
+                    if let (Some(alias), Some(name)) =
+                        (rust_ident(&typedef.name), rust_ident(&definition.name))
+                    {
+                        code.push_str(&format!("{TYPE_ALLOW}pub type {alias} = {name};\n\n"));
+                    }
+                } else if opaque_tag.is_some() {
                     // A typedef to a struct/union tag with no definition in this header is an
                     // opaque handle (e.g. `typedef struct Foo foo;`). Emit a standard opaque FFI
                     // type so the pointers that reference it resolve, instead of dropping it.
@@ -194,6 +242,18 @@ fn emit_bindings_from_parsed(
     code.push_str("extern \"C\" {\n");
     for func in &parsed.functions {
         if should_include(&func.name, &options.allowlist_functions) {
+            if parsed.incomplete_by_value(&func.return_type, &incomplete, 0)
+                || func
+                    .params
+                    .iter()
+                    .any(|(ty, _)| parsed.incomplete_by_value(ty, &incomplete, 0))
+            {
+                warnings.push(format!(
+                    "Skipped function {}: incomplete aggregate passed by value",
+                    func.name
+                ));
+                continue;
+            }
             match generate_function(func) {
                 Ok(generated) => code.push_str(&generated),
                 Err(reason) => warnings.push(reason),
@@ -324,6 +384,27 @@ fn generate_union(union_def: &StructDef, warnings: &mut Vec<String>) -> Option<S
     }
     code.push_str("}\n");
     Some(code)
+}
+
+pub(crate) fn aggregate_layout_supported(def: &StructDef, union: bool) -> bool {
+    if !def
+        .fields
+        .iter()
+        .all(|(ty, name)| rust_ident(name).is_some() && c_type_to_rust_checked(ty).is_ok())
+    {
+        return false;
+    }
+    if def.bitfields.is_empty() {
+        return true;
+    }
+    if union {
+        def.bitfields.iter().all(|field| {
+            bitfield_layout(&field.c_type)
+                .is_some_and(|(size, _)| field.width > 0 && field.width <= size * 8)
+        })
+    } else {
+        bitfield_storage(def).is_some()
+    }
 }
 
 /// Scalar/array layout used for the native GCC/Clang bitfield allocation convention.
@@ -942,23 +1023,27 @@ int use_outer(Outer *value);
         assert_eq!(rust_output.stdout, c_output.stdout);
     }
     /// The layout algorithm models the Itanium ABI; MSVC packs bitfields
-    /// differently, so bitfield structs are skipped with a warning there
+    /// differently, so bitfield structs are opaque with a warning there
     /// instead of emitting a wrong layout. `bitfield_storage` returns None
     /// under `cfg!(target_env = "msvc")`.
     #[cfg(target_env = "msvc")]
     #[test]
-    fn bitfield_structs_are_skipped_on_msvc() {
+    fn bitfield_structs_are_opaque_on_msvc() {
         let dir = tempdir().unwrap();
         let header = dir.path().join("bits.h");
-        let declarations = "typedef struct { unsigned flags : 3; char tail; } Single;\n";
+        let declarations = "typedef struct { unsigned flags : 3; char tail; } Single;\nvoid by_value(Single value);\nvoid by_pointer(Single *value);\n";
         std::fs::write(&header, declarations).unwrap();
         let binding = generate_bindings(&header, &BindingOptions::default()).unwrap();
         assert!(!binding.code.contains("__eq_bitfield_storage_0"));
-        assert!(!binding.code.contains("pub struct Single"));
+        assert!(binding.code.contains("pub struct Single"));
+        assert!(binding.code.contains("_private: [u8; 0]"));
+        assert!(!binding.code.contains("pub tail"));
+        assert!(!binding.code.contains("pub fn by_value"));
+        assert!(binding.code.contains("pub fn by_pointer"));
         assert!(binding
             .warnings
             .iter()
-            .any(|warning| warning.contains("Skipped struct Single: unsupported bitfield layout")));
+            .any(|warning| warning.contains("Opaque struct Single: incomplete field layout")));
     }
     #[test]
     fn unsupported_bitfields_do_not_emit_corrupt_layouts() {
@@ -970,10 +1055,12 @@ int use_outer(Outer *value);
         )
         .unwrap();
         let binding = generate_bindings(&header, &BindingOptions::default()).unwrap();
-        assert!(!binding.code.contains("pub struct Invalid"));
+        assert!(binding.code.contains("pub struct Invalid"));
+        assert!(binding.code.contains("_private: [u8; 0]"));
+        assert!(!binding.code.contains("pub tail"));
         assert!(binding
             .warnings
             .iter()
-            .any(|warning| warning.contains("unsupported bitfield layout")));
+            .any(|warning| warning.contains("incomplete field layout")));
     }
 }

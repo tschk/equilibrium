@@ -72,6 +72,471 @@ fn import_generation_skips_unsupported_return_types_with_warnings() {
 }
 
 #[test]
+fn tagged_pointer_typedefs_compile_with_pointer_signatures() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("tag_pointers.h");
+    std::fs::write(
+        &header,
+        r#"
+struct S { int x; };
+union U { int x; double y; };
+typedef struct S Value;
+typedef struct S *StructPtr;
+typedef const struct S *ConstStructPtr;
+typedef union U *UnionPtr;
+typedef struct Missing *OpaqueStructPtr;
+typedef union MissingUnion *OpaqueUnionPtr;
+void consume_struct(StructPtr p);
+void consume_const(ConstStructPtr p);
+void consume_union(UnionPtr p);
+void consume_opaque_struct(OpaqueStructPtr p);
+void consume_opaque_union(OpaqueUnionPtr p);
+void consume_value(Value v);
+"#,
+    )
+    .unwrap();
+    for binding in [
+        equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap(),
+        {
+            let import = generate_imports(&header, Language::Rust, &Default::default()).unwrap();
+            equilibrium_ffi::GeneratedBinding {
+                code: import.code,
+                source_header: import.source_header,
+                warnings: import.warnings,
+            }
+        },
+    ] {
+        let source = format!(
+            r#"{}
+const _: () = assert!(std::mem::size_of::<StructPtr>() == std::mem::size_of::<*mut c_void>());
+const _: () = assert!(std::mem::size_of::<UnionPtr>() == std::mem::size_of::<*mut c_void>());
+const _: () = assert!(std::mem::size_of::<OpaqueStructPtr>() == std::mem::size_of::<*mut c_void>());
+const _: () = assert!(std::mem::size_of::<OpaqueUnionPtr>() == std::mem::size_of::<*mut c_void>());
+fn check() {{
+    let _: unsafe extern "C" fn(*mut c_void) = consume_struct;
+    let _: unsafe extern "C" fn(*const c_void) = consume_const;
+    let _: unsafe extern "C" fn(*mut c_void) = consume_union;
+    let _: unsafe extern "C" fn(*mut c_void) = consume_opaque_struct;
+    let _: unsafe extern "C" fn(*mut c_void) = consume_opaque_union;
+    let _: unsafe extern "C" fn(S) = consume_value;
+}}
+"#,
+            binding.code
+        );
+        let rust_file = dir.path().join("generated.rs");
+        std::fs::write(&rust_file, source).unwrap();
+        let output = std::process::Command::new("rustc")
+            .args([
+                "--edition=2021",
+                "--crate-type=lib",
+                "--emit=metadata",
+                "-o",
+            ])
+            .arg(dir.path().join("generated.rmeta"))
+            .arg(&rust_file)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stderr),
+            binding.code
+        );
+    }
+}
+
+#[test]
+fn reconstructed_consumers_do_not_treat_tagged_pointers_as_tag_definitions() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("tag_pointer.h");
+    std::fs::write(
+        &header,
+        "struct Tag { int x; };\ntypedef struct Tag *Ptr;\nvoid consume(Ptr value);\n",
+    )
+    .unwrap();
+    for (language, expected) in [
+        (Language::Nim, "Ptr* = ptr Tag"),
+        (Language::D, "alias Ptr = Tag*;"),
+        (Language::Odin, "Ptr :: ^Tag"),
+        (Language::CSharp, "extern void consume(IntPtr value)"),
+    ] {
+        let import = generate_imports(&header, language, &Default::default()).unwrap();
+        assert!(
+            import.code.contains(expected),
+            "{language:?}: {}",
+            import.code
+        );
+        assert!(
+            !import.code.contains("Tag * {"),
+            "{language:?}: {}",
+            import.code
+        );
+        assert!(
+            !import.code.contains("struct Ptr"),
+            "{language:?}: {}",
+            import.code
+        );
+    }
+}
+
+#[test]
+fn incomplete_aggregate_layouts_do_not_escape_into_reconstructed_bindings() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("records.h");
+    std::fs::write(
+        &header,
+        r#"
+typedef struct { int prefix; void (*callback)(void); int suffix; } Record;
+typedef Record Alias;
+typedef union { int number; void (*callback)(void); } Choice;
+typedef struct { Alias items[2]; } Outer;
+void consume(Record value);
+void consume_alias(Alias value);
+void consume_outer(Outer value);
+void consume_choice(Choice value);
+void inspect(Record *value);
+"#,
+    )
+    .unwrap();
+    let rust = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap();
+    assert!(rust.code.contains("_private: [u8; 0]"));
+    assert!(!rust.code.contains("pub prefix"));
+    assert!(rust.code.contains("pub fn inspect"));
+    for name in [
+        "consume",
+        "consume_alias",
+        "consume_outer",
+        "consume_choice",
+    ] {
+        assert!(
+            !rust.code.contains(&format!("pub fn {name}(")),
+            "{}",
+            rust.code
+        );
+        assert!(rust.warnings.iter().any(|warning| warning.contains(name)));
+    }
+    for language in [
+        Language::Nim,
+        Language::CSharp,
+        Language::D,
+        Language::Odin,
+        Language::V,
+    ] {
+        let error = generate_imports(&header, language, &ImportOptions::default()).unwrap_err();
+        assert!(error.contains("inspect"), "{language:?}: {error}");
+    }
+    for language in [Language::C, Language::Cpp, Language::Zig] {
+        let result = generate_imports(&header, language, &ImportOptions::default()).unwrap();
+        assert!(
+            result.code.contains("consume"),
+            "{language:?}: {}",
+            result.code
+        );
+    }
+}
+
+#[test]
+fn rejects_ambiguous_and_unmappable_fields_transitively() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("ambiguous.h");
+    std::fs::write(
+        &header,
+        r#"
+typedef struct BadTag { int a, b; } Bad;
+typedef struct BadTag Other;
+typedef struct { struct BadTag value; } Outer;
+typedef Outer Alias;
+void consume(Alias value);
+void consume_other(Other value);
+void inspect(Bad *value);
+"#,
+    )
+    .unwrap();
+    let result = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap();
+    assert!(!result.code.contains("pub fn consume("), "{}", result.code);
+    assert!(
+        !result.code.contains("pub fn consume_other("),
+        "{}",
+        result.code
+    );
+    assert!(result.code.contains("pub type Other = Bad;"));
+    assert!(result.code.contains("pub fn inspect("));
+    assert!(!result.code.contains("pub b:"));
+}
+
+#[test]
+fn unmappable_field_and_its_union_dependency_are_not_emitted_by_value() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("unmapped.h");
+    std::fs::write(
+        &header,
+        r#"
+typedef struct { long double value; } Bad;
+typedef union { Bad bad; int other; } Outer;
+void consume(Outer value);
+"#,
+    )
+    .unwrap();
+    let binding = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap();
+    assert!(!binding.code.contains("pub fn consume("));
+    assert!(!binding.code.contains("pub value:"));
+    assert!(!binding.code.contains("pub union Outer"));
+    for language in [
+        Language::Nim,
+        Language::CSharp,
+        Language::D,
+        Language::Odin,
+        Language::V,
+    ] {
+        let result = generate_imports(&header, language, &ImportOptions::default()).unwrap();
+        assert!(
+            !result.code.contains("consume"),
+            "{language:?}: {}",
+            result.code
+        );
+    }
+}
+
+#[test]
+fn callbacks_and_unsupported_bitfields_cannot_expose_incomplete_values() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("callbacks.h");
+    std::fs::write(
+        &header,
+        r#"
+typedef struct { unsigned int bits : 100; } Bad;
+typedef void (*Callback)(Bad value);
+void consume(Bad value);
+void register_callback(Callback cb);
+"#,
+    )
+    .unwrap();
+    let error = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap_err();
+    assert!(error.contains("Callback"));
+    let error = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap_err();
+    assert!(error.contains("Callback"));
+}
+
+#[test]
+fn qualified_aliases_do_not_hide_incomplete_layouts() {
+    let header = std::path::Path::new("qualifiers.h");
+    let result = equilibrium_ffi::generate_bindings_from_content(
+        header,
+        r#"
+typedef struct { int a,b; } Bad;
+typedef volatile const Bad Alias;
+typedef struct { Alias value; int tail; } Outer;
+void consume(Outer value);
+"#,
+        &Default::default(),
+    )
+    .unwrap();
+    assert!(!result.code.contains("pub fn consume("), "{}", result.code);
+    assert!(!result.code.contains("pub tail:"), "{}", result.code);
+}
+
+#[test]
+fn callbacks_accept_incomplete_pointers_and_ignore_parameter_names() {
+    let header = std::path::Path::new("callback_pointer.h");
+    let result = equilibrium_ffi::generate_bindings_from_content(
+        header,
+        r#"
+typedef struct { int a,b; } Bad;
+typedef Bad *BadPtr;
+typedef void (*Direct)(Bad *value);
+typedef BadPtr (*Callback)(BadPtr value, int Bad);
+void register_callback(Callback cb);
+"#,
+        &Default::default(),
+    )
+    .unwrap();
+    assert!(
+        result.code.contains("fn(BadPtr, c_int) -> BadPtr"),
+        "{}",
+        result.code
+    );
+    assert!(result.code.contains("fn(*mut Bad)"), "{}", result.code);
+    assert!(result.code.contains("pub fn register_callback("));
+}
+
+#[test]
+fn callbacks_reject_qualified_alias_passed_by_value() {
+    let header = std::path::Path::new("callback_value.h");
+    let error = equilibrium_ffi::generate_bindings_from_content(
+        header,
+        r#"
+typedef struct { int a,b; } Bad;
+typedef volatile const Bad Alias;
+typedef Alias (*Callback)(int value);
+"#,
+        &Default::default(),
+    )
+    .unwrap_err();
+    assert!(error.contains("Callback"));
+}
+
+#[test]
+fn array_typedef_parameters_never_use_array_by_value() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("array_alias.h");
+    for declaration in [
+        "void consume(Four value);",
+        "typedef void (*Callback)(Four value);\nvoid register_callback(Callback cb);",
+    ] {
+        std::fs::write(
+            &header,
+            format!(
+                "typedef int Four[4];\ntypedef Four Alias;\n{}\n",
+                declaration.replace("Four value", "Alias value")
+            ),
+        )
+        .unwrap();
+        let error = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap_err();
+        assert!(error.contains("array typedef parameter"));
+        for language in [
+            Language::Nim,
+            Language::CSharp,
+            Language::D,
+            Language::Odin,
+            Language::V,
+        ] {
+            let error = generate_imports(&header, language, &Default::default()).unwrap_err();
+            assert!(
+                error.contains("array typedef parameter"),
+                "{language:?}: {error}"
+            );
+        }
+        for language in [Language::C, Language::Cpp, Language::Zig] {
+            assert!(generate_imports(&header, language, &Default::default()).is_ok());
+        }
+    }
+}
+
+#[test]
+fn array_of_pointers_typedef_parameters_are_rejected() {
+    let header = std::path::Path::new("array_of_pointers.h");
+    for declaration in [
+        "void consume(Four value);",
+        "typedef void (*Callback)(Four value);",
+    ] {
+        let source = format!("typedef int *Four[4];\n{declaration}\n");
+        let error =
+            equilibrium_ffi::generate_bindings_from_content(header, &source, &Default::default())
+                .unwrap_err();
+        assert!(error.contains("array typedef parameter"));
+    }
+    let control =
+        "typedef int *Ptr;\nvoid consume(Ptr value);\ntypedef void (*Callback)(Ptr value);\n";
+    let binding =
+        equilibrium_ffi::generate_bindings_from_content(header, control, &Default::default())
+            .unwrap();
+    assert!(binding.code.contains("pub fn consume(value: Ptr)"));
+    assert!(binding.code.contains("fn(Ptr)"));
+}
+
+#[test]
+fn unused_opaque_pointer_alias_does_not_block_default_imports() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("unused.h");
+    std::fs::write(
+        &header,
+        "typedef struct { int a,b; } Bad;\ntypedef Bad *BadPtr;\nint good(int x);\n",
+    )
+    .unwrap();
+    for language in [
+        Language::Nim,
+        Language::CSharp,
+        Language::D,
+        Language::Odin,
+        Language::V,
+    ] {
+        let result = generate_imports(&header, language, &Default::default()).unwrap();
+        assert!(result.code.contains("good"));
+        assert!(!result.code.contains("BadPtr"));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("BadPtr")));
+    }
+}
+
+#[test]
+fn unused_opaque_pointer_alias_does_not_block_allowlisted_function() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("allowed.h");
+    std::fs::write(&header, "typedef struct { int a,b; } Bad;\ntypedef Bad *BadPtr;\nvoid inspect(BadPtr p);\nint safe(int x);\n").unwrap();
+    for language in [
+        Language::Nim,
+        Language::CSharp,
+        Language::D,
+        Language::Odin,
+        Language::V,
+    ] {
+        let result = generate_imports(
+            &header,
+            language,
+            &ImportOptions::default().allowlist_functions(["safe"]),
+        )
+        .unwrap();
+        assert!(
+            result.code.contains("safe"),
+            "{language:?}: {}",
+            result.code
+        );
+        assert!(!result.code.contains("inspect"));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("BadPtr")));
+    }
+}
+
+#[test]
+fn reconstructed_consumers_explicitly_reject_opaque_pointer_aliases() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("pointer_alias.h");
+    std::fs::write(
+        &header,
+        r#"
+typedef struct { int a,b; } Bad;
+typedef Bad *BadPtr;
+typedef BadPtr OtherPtr;
+void inspect(OtherPtr value);
+"#,
+    )
+    .unwrap();
+    for language in [
+        Language::Nim,
+        Language::CSharp,
+        Language::D,
+        Language::Odin,
+        Language::V,
+    ] {
+        let error = generate_imports(&header, language, &ImportOptions::default()).unwrap_err();
+        assert!(error.contains("inspect"), "{language:?}: {error}");
+    }
+    std::fs::write(
+        &header,
+        "typedef struct { int a,b; } Bad;\ntypedef Bad *BadPtr;\n",
+    )
+    .unwrap();
+    for language in [
+        Language::Nim,
+        Language::CSharp,
+        Language::D,
+        Language::Odin,
+        Language::V,
+    ] {
+        let result = generate_imports(&header, language, &ImportOptions::default()).unwrap();
+        assert!(!result.code.contains("BadPtr"));
+        assert!(result
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("BadPtr")));
+    }
+}
+
+#[test]
 fn import_generation_respects_allowlist() {
     let (_dir, header) = write_header();
     let generated = generate_imports(
