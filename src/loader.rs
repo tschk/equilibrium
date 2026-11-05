@@ -190,12 +190,6 @@ pub fn load_with_options<S: AsRef<Path>>(
     })?;
 
     if options.compile {
-        if lang == Language::CSharp {
-            return Err(LoadError::CompilationFailed(
-                lang,
-                crate::compiler::CompileError::UnsupportedCOutput { language: lang }.to_string(),
-            ));
-        }
         find_compiler(lang).ok_or(LoadError::CompilerNotFound(lang))?;
         validate_extra_args(&options.compile_args)
             .map_err(|e| LoadError::CompilationFailed(lang, e.to_string()))?;

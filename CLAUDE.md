@@ -102,6 +102,10 @@ Zig objects must be compiled with `-fPIC -OReleaseFast` to link cleanly into Rus
 
 A `module main` V object drags V's runtime and `main` into Rust's link. The polyglot-gui builds `v_module.v` as a non-main module with `v -shared -gc none` and links the resulting `libv_module.{dylib,so}` with an rpath (Unix hosts only). `load()` on a `.v` file does the same: `v -shared -gc none`, linked as a dylib with an rpath, with the header synthesized from `@[export]` functions (`src/header_synth.rs`).
 
+### C# Native AOT
+
+`load()` on a `.cs` file writes a csproj next to the output (`<stem>.csproj.d/`) with `PublishAot` and `NativeLib=Shared`, runs `dotnet publish -r <rid>`, and links `lib<stem>.{dylib,so}` with an rpath. The header is synthesized from `[UnmanagedCallersOnly(EntryPoint = "…")]` methods. `StripSymbols=false` because a GNU `strip` first on PATH breaks ILC's macOS strip step, and the macOS install name is forced to `@rpath/lib<stem>.dylib`. Tests keep the NuGet cache in `target/nuget` unless `NUGET_PACKAGES` is set.
+
 ### Windows build notes
 
 The `polyglot-gui` binary targets D3D11 (no Vulkan needed). Build from Windows PowerShell:
