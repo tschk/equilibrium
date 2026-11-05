@@ -4,6 +4,22 @@ use equilibrium_ffi::{
 };
 
 #[test]
+fn unresolved_include_error_identifies_the_abi_risk() {
+    let dir = tempfile::tempdir().unwrap();
+    let header = dir.path().join("uses_include.h");
+    let source = "#include \"foreign_types.h\"\nint value(void);\n";
+    std::fs::write(&header, source).unwrap();
+    let binding_error =
+        generate_bindings_from_content(&header, source, &BindingOptions::default()).unwrap_err();
+    let import_error =
+        generate_imports(&header, Language::Nim, &ImportOptions::default()).unwrap_err();
+    for error in [binding_error, import_error] {
+        assert!(error.contains("#include \"foreign_types.h\""), "{error}");
+        assert!(error.contains("ABI mismatch"), "{error}");
+    }
+}
+
+#[test]
 fn reconstructed_consumers_reject_unresolved_preprocessing() {
     let dir = tempfile::tempdir().unwrap();
     let header = dir.path().join("macros.h");

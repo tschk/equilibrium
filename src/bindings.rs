@@ -81,7 +81,7 @@ pub fn generate_bindings_from_parsed(
     parsed.ensure_supported_declarations()?;
     if let Some(directive) = &parsed.unsupported_preprocessor {
         return Err(format!(
-            "Cannot generate Rust bindings without preprocessing: {directive}"
+            "Cannot generate Rust bindings without preprocessing: {directive}; ignoring this directive could cause an ABI mismatch"
         ));
     }
     if parsed.has_enum_keyword {

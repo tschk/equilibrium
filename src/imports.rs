@@ -123,7 +123,7 @@ pub fn generate_imports_from_parsed(
     if !binds_against_c_header(language) {
         if let Some(directive) = &parsed.unsupported_preprocessor {
             return Err(format!(
-                "Cannot generate {language:?} imports without preprocessing: {directive}"
+                "Cannot generate {language:?} imports without preprocessing: {directive}; ignoring this directive could cause an ABI mismatch"
             ));
         }
         if parsed.has_enum_keyword {
