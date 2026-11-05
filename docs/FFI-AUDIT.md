@@ -2,6 +2,8 @@
 
 This audit describes equilibrium at `206b4b67ddcc17a969d8b54442e41ae88617c265`. It is a source review, not a complete ABI certification or a claim about later branches. The priorities below reflect potential consequences, not measured frequency.
 
+Since this snapshot, binding generation has been hardened against several incomplete aggregate layouts and their by-value uses. This does not cover all layout-affecting syntax: packed attributes and packing directives still need target-aware handling. Some unsupported array and pointer typedefs are rejected instead of generating an ABI declaration.
+
 ## Priorities
 
 1. **Prevent partial aggregate layouts.** [`generate_struct` and `generate_union`](../src/bindings.rs) warn and continue when an ordinary field has an invalid name or unsupported type. The resulting definition can have the wrong size, alignment, or offsets. [`parse_typedef_struct`](../src/c_header.rs) can also omit fields that it cannot parse before generation sees them. Unsupported bitfield layouts have a separate rejection path, but that does not protect ordinary fields. Reject the whole aggregate when any field is lost, propagate that failure to by-value users, and test both parser and emitter failures against C layout probes.
