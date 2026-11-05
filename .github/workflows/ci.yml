@@ -115,11 +115,48 @@ jobs:
         echo "$RUNNER_TEMP/v" >> "$GITHUB_PATH"
         "$RUNNER_TEMP/v/v" version
 
+    # Hare has no apt package on ubuntu-latest and does not run on macOS, so its toolchain is
+    # built from pinned release tags and cached; the source build only reruns when a tag changes.
+    - name: Cache Hare toolchain
+      if: runner.os == 'Linux'
+      id: hare-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/hare-toolchain
+        key: hare-${{ runner.os }}-${{ runner.arch }}-qbe-v1.3-harec-0.26.0-hare-0.26.0.1
+
+    - name: Build Hare toolchain
+      if: runner.os == 'Linux' && steps.hare-cache.outputs.cache-hit != 'true'
+      run: |
+        set -eux
+        sudo apt-get install -y scdoc   # hare's install target builds the man pages
+        prefix="$HOME/hare-toolchain"
+        src="$RUNNER_TEMP/hare-src"
+        mkdir -p "$src"
+        git clone --depth 1 --branch v1.3 git://c9x.me/qbe.git "$src/qbe"
+        make -C "$src/qbe" -j2 PREFIX="$prefix" install
+        export PATH="$prefix/bin:$PATH"
+        git clone --depth 1 --branch 0.26.0 https://git.sr.ht/~sircmpwn/harec "$src/harec"
+        cp "$src/harec/configs/linux.mk" "$src/harec/config.mk"
+        make -C "$src/harec" -j2 PREFIX="$prefix"
+        make -C "$src/harec" PREFIX="$prefix" install
+        git clone --depth 1 --branch 0.26.0.1 https://git.sr.ht/~sircmpwn/hare "$src/hare"
+        cp "$src/hare/configs/linux.mk" "$src/hare/config.mk"
+        make -C "$src/hare" -j2 PREFIX="$prefix"
+        make -C "$src/hare" PREFIX="$prefix" install
+
+    - name: Add Hare to PATH
+      if: runner.os == 'Linux'
+      run: |
+        echo "$HOME/hare-toolchain/bin" >> "$GITHUB_PATH"
+        "$HOME/hare-toolchain/bin/hare" version
+
     - name: Run tests with multiple compilers
       run: cargo test --all-features
       env:
         # Fail, rather than skip and report `ok`, if an installed-above compiler is missing.
-        EQ_REQUIRE_COMPILERS: zig,nim,d,odin,v
+        # Hare is Linux-only, so it is required only there.
+        EQ_REQUIRE_COMPILERS: zig,nim,d,odin,v${{ runner.os == 'Linux' && ',hare' || '' }}
 
   docs:
     name: Documentation
