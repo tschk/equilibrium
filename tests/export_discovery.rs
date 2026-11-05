@@ -282,5 +282,8 @@ int multiply(int a, int b) {
 
     assert_eq!(module.exports, vec!["multiply"]);
     assert_eq!(module.export_source, ExportSource::Requested);
-    assert!(module.warnings.is_empty());
+    assert!(module
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("header synthesis")));
 }
