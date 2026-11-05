@@ -917,15 +917,39 @@ fn hare_functions(source: &str) -> Vec<ForeignFn> {
     let text = strip_c_comments(source);
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
+    let mut pending_symbol = None;
     for (index, line) in lines.iter().enumerate() {
         let mut trimmed = line.trim_start();
-        let mut symbol = None;
-        if let Some(rest) = trimmed.strip_prefix("@symbol(") {
-            symbol = rest.split('"').nth(1).map(str::to_string);
-            trimmed = rest
-                .split_once(')')
-                .map_or("", |(_, after)| after.trim_start());
+        if trimmed.is_empty() {
+            continue;
         }
+        while trimmed.starts_with('@') {
+            let end = trimmed
+                .find(|c: char| c.is_whitespace() || c == '(')
+                .unwrap_or(trimmed.len());
+            let attribute = &trimmed[..end];
+            let rest = &trimmed[end..];
+            if let Some(args) = rest.strip_prefix('(') {
+                let Some((args, after)) = args.split_once(')') else {
+                    pending_symbol = None;
+                    trimmed = "";
+                    break;
+                };
+                if attribute == "@symbol" {
+                    pending_symbol = args
+                        .trim()
+                        .strip_prefix('"')
+                        .and_then(|s| s.strip_suffix('"').map(str::to_string));
+                }
+                trimmed = after.trim_start();
+            } else {
+                trimmed = rest.trim_start();
+            }
+        }
+        if trimmed.is_empty() {
+            continue;
+        }
+        let symbol = pending_symbol.take();
         let Some(rest) = trimmed.strip_prefix("export fn ") else {
             continue;
         };
@@ -1276,5 +1300,40 @@ export fn takes_str(s: str) size = len(s);
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("takes_str")));
+    }
+
+    #[test]
+    fn hare_symbol_attributes_apply_only_to_their_declaration() {
+        let source = r#"
+@symbol("actual")
+// A comment and another attribute do not end the declaration.
+@noreturn
+export fn renamed() void = abort();
+export fn next() int = 1;
+@symbol("inline") export fn inline_name() int = 2;
+export fn after_inline() int = 3;
+@symbol("private_symbol")
+fn private() int = 4;
+export fn after_private() int = 5;
+@symbol("bad_symbol")
+export fn bad(x: str) int = 6;
+export fn after_bad() int = 7;
+"#;
+        let out = synthesize(Language::Hare, source).expect("header");
+        let h = &out.header;
+        for prototype in [
+            "void actual(void);",
+            "int32_t next(void);",
+            "int32_t inline(void);",
+            "int32_t after_inline(void);",
+            "int32_t after_private(void);",
+            "int32_t after_bad(void);",
+        ] {
+            assert!(h.contains(prototype), "missing {prototype}:\n{h}");
+        }
+        for absent in ["renamed(", "inline_name(", "private_symbol(", "bad_symbol("] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
+        assert!(out.warnings.iter().any(|w| w.contains("bad_symbol")));
     }
 }
