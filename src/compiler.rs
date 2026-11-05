@@ -576,6 +576,7 @@ impl Drop for ManagedHeader {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(self.stage.join(format!("{}.h", self.stem)));
         let _ = std::fs::remove_dir(&self.stage);
+        let _ = self._lock.unlock();
     }
 }
 

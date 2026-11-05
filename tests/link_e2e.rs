@@ -227,7 +227,7 @@ fn rebuilds_do_not_reuse_or_overwrite_headers() {
         let sibling = source.with_extension("h");
         write(&sibling, "double sample(double x); /* handwritten */\n");
         let third = compile_to_c(&source, &out).unwrap();
-        assert_eq!(third.header_path.unwrap(), sibling);
+        assert_eq!(third.header_path.unwrap(), sibling.canonicalize().unwrap());
         assert_eq!(
             std::fs::read_to_string(sibling).unwrap(),
             "double sample(double x); /* handwritten */\n"
