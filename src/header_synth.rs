@@ -874,7 +874,7 @@ fn v_functions(source: &str) -> Vec<ForeignFn> {
     let mut out = Vec::new();
     let mut symbol: Option<String> = None;
     for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
+        let mut trimmed = line.trim();
         let attr = trimmed
             .strip_prefix("@[")
             .or_else(|| trimmed.strip_prefix('['));
@@ -884,7 +884,7 @@ fn v_functions(source: &str) -> Vec<ForeignFn> {
                 .nth(1)
                 .map(str::to_string)
                 .filter(|name| !name.is_empty());
-            continue;
+            trimmed = attr.split_once(']').map_or("", |(_, rest)| rest.trim());
         }
         if trimmed.is_empty() {
             continue;
@@ -946,10 +946,15 @@ fn hare_functions(source: &str) -> Vec<ForeignFn> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
     let mut pending_symbol = None;
+    let mut pending_export = false;
     for (index, line) in lines.iter().enumerate() {
         let mut trimmed = line.trim_start();
         if trimmed.is_empty() {
             continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("export ") {
+            pending_export = true;
+            trimmed = rest.trim_start();
         }
         while trimmed.starts_with('@') {
             let end = trimmed
@@ -960,6 +965,7 @@ fn hare_functions(source: &str) -> Vec<ForeignFn> {
             if let Some(args) = rest.strip_prefix('(') {
                 let Some((args, after)) = args.split_once(')') else {
                     pending_symbol = None;
+                    pending_export = false;
                     trimmed = "";
                     break;
                 };
@@ -978,7 +984,12 @@ fn hare_functions(source: &str) -> Vec<ForeignFn> {
             continue;
         }
         let symbol = pending_symbol.take();
-        let Some(rest) = trimmed.strip_prefix("export fn ") else {
+        if let Some(rest) = trimmed.strip_prefix("export ") {
+            pending_export = true;
+            trimmed = rest.trim_start();
+        }
+        let exported = std::mem::take(&mut pending_export);
+        let Some(rest) = trimmed.strip_prefix("fn ").filter(|_| exported) else {
             continue;
         };
         let name_end = rest
@@ -1430,6 +1441,34 @@ pub fn bad(s string) int { return s.len }
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("vm_bad")));
+    }
+
+    #[test]
+    fn v_inline_export_binds_to_same_line_function() {
+        let source = "@[export: 'v_inline'] pub fn inline(x int) int { return x }\nfn main() {}";
+        let out = synthesize(Language::V, source).expect("header");
+        assert!(
+            out.header.contains("int32_t v_inline(int32_t x);"),
+            "{}",
+            out.header
+        );
+        assert!(
+            !out.header.contains("void v_inline(void);"),
+            "{}",
+            out.header
+        );
+    }
+
+    #[test]
+    fn hare_export_before_symbol_attribute() {
+        let source = "export @symbol(\"only_renamed\") fn original(x: int) int = x;";
+        let out = synthesize(Language::Hare, source).expect("header");
+        assert!(
+            out.header.contains("int32_t only_renamed(int32_t x);"),
+            "{}",
+            out.header
+        );
+        assert!(!out.header.contains("original("), "{}", out.header);
     }
 
     #[test]

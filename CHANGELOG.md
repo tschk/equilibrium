@@ -20,6 +20,10 @@ the C declaration is invalid. Enum size and signedness can depend on the compile
 and its options. C, C++, and Zig imports use the original header instead and are
 not subject to this enum check.
 
+All binding and import consumers also refuse declarations using `intptr_t` or
+`uintptr_t` when their target ABI has not been established. These types are not
+assumed to match Rust's pointer-sized integers, even for header-based consumers.
+
 Reconstructed bindings and imports also reject unresolved includes, macros, and
 conditional directives because their effects can change declarations and ABI.
 An error containing `without preprocessing` identifies a directive whose effect

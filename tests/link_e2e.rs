@@ -711,6 +711,22 @@ const V_SOURCE: &str = "module main\n\nfn twice(v int) int { return v * 2 }\n\n\
          fn main() {}\n";
 
 #[test]
+fn inline_v_export_generates_correct_public_header() {
+    if !available(Language::V) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("inline.v");
+    write(
+        &source,
+        "module main\n@[export: 'v_inline'] pub fn inline(x int) int { return x }\nfn main() {}\n",
+    );
+    let result = equilibrium_ffi::compile_to_c(&source, dir.path()).unwrap();
+    let header = std::fs::read_to_string(result.header_path.unwrap()).unwrap();
+    assert!(header.contains("int32_t v_inline(int32_t x);"), "{header}");
+}
+
+#[test]
 fn v_source_without_a_header_compiles_but_unresolved_includes_are_refused() {
     if !available(Language::V) {
         return;
@@ -732,6 +748,26 @@ fn v_source_with_a_handwritten_header_links_through_load() {
 }
 
 const HARE_SOURCE: &str = "fn twice(v: int) int = v * 2;\n\nexport fn hmath_add(a: int, b: int) int = twice(a + b) / 2;\n";
+
+#[test]
+fn hare_export_before_symbol_generates_correct_public_header() {
+    if !available(Language::Hare) {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("renamed.ha");
+    write(
+        &source,
+        "export @symbol(\"only_renamed\") fn original(x: int) int = x;\n",
+    );
+    let result = equilibrium_ffi::compile_to_c(&source, dir.path()).unwrap();
+    let header = std::fs::read_to_string(result.header_path.unwrap()).unwrap();
+    assert!(
+        header.contains("int32_t only_renamed(int32_t x);"),
+        "{header}"
+    );
+    assert!(!header.contains("original("), "{header}");
+}
 
 #[test]
 fn hare_source_without_a_header_compiles_but_unresolved_includes_are_refused() {

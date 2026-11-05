@@ -72,6 +72,34 @@ fn import_generation_skips_unsupported_return_types_with_warnings() {
 }
 
 #[test]
+fn unverified_pointer_integer_abi_is_refused() {
+    let dir = tempdir().unwrap();
+    let header = dir.path().join("pointer_integers.h");
+    for source in [
+        "intptr_t signed_value(void);",
+        "void consume(uintptr_t value);",
+        "void consume(const volatile intptr_t *input);",
+        "void consume(uintptr_t *output);",
+        "typedef intptr_t Alias;",
+        "typedef uintptr_t (*Callback)(void);",
+        "typedef struct Value { intptr_t value; } Value;",
+    ] {
+        std::fs::write(&header, source).unwrap();
+        let result = equilibrium_ffi::generate_bindings(&header, &Default::default());
+        let error = result.unwrap_err();
+        assert!(error.contains("ABI"), "{source}: {error}");
+        let error =
+            equilibrium_ffi::generate_bindings_from_content(&header, source, &Default::default())
+                .unwrap_err();
+        assert!(error.contains("ABI"), "{source}: {error}");
+        let error = generate_imports(&header, Language::Rust, &Default::default()).unwrap_err();
+        assert!(error.contains("ABI"), "{source}: {error}");
+    }
+    std::fs::write(&header, "void consume(intptr_t_like value);").unwrap();
+    assert!(equilibrium_ffi::generate_bindings(&header, &Default::default()).is_ok());
+}
+
+#[test]
 fn tagged_pointer_typedefs_compile_with_pointer_signatures() {
     let dir = tempdir().unwrap();
     let header = dir.path().join("tag_pointers.h");

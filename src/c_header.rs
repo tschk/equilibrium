@@ -71,6 +71,33 @@ impl ParsedHeader {
     /// Refuse generation when the parser could not account for a declaration.
     /// Call this at every public generation boundary, including parsed-header paths.
     pub(crate) fn ensure_supported_declarations(&self) -> Result<(), String> {
+        let unverified = |ty: &str| {
+            ty.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .any(|word| matches!(word, "intptr_t" | "uintptr_t"))
+        };
+        let function_unverified = |function: &FunctionDef| {
+            unverified(&function.return_type)
+                || function.params.iter().any(|(ty, _)| unverified(ty))
+        };
+        if self.functions.iter().any(function_unverified)
+            || self.typedefs.iter().any(|alias| {
+                unverified(&alias.name)
+                    || unverified(&alias.target)
+                    || alias
+                        .callback_decl
+                        .as_ref()
+                        .is_some_and(function_unverified)
+            })
+            || self.structs.iter().chain(&self.unions).any(|aggregate| {
+                aggregate.fields.iter().any(|(ty, _)| unverified(ty))
+                    || aggregate
+                        .bitfields
+                        .iter()
+                        .any(|field| unverified(&field.c_type))
+            })
+        {
+            return Err("Cannot generate bindings: intptr_t/uintptr_t ABI is not established for the target".to_string());
+        }
         if self.skipped.is_empty() {
             Ok(())
         } else {

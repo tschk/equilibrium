@@ -18,7 +18,13 @@ To support a determinable subset later, tie each fully identified enum to the ac
 
 At the same revision, two D **producer** fixtures from `d_rebuild_and_handwritten_sibling_header` were checked against their actual generated headers and unmodified generated Rust bindings on x86-64 Linux with LDC 1.30.0, GCC 12.2.0, and Rust 1.99.1. For `extern(C) int sample(int x)`, the generated header declared `int32_t sample(int32_t x)` and the Rust binding used `i32`; D, C, and Rust each reported size and alignment 4 and returned `-123456789` unchanged. For the equivalent `double` identity function, all three reported size and alignment 8 and returned `-123.25` unchanged. The compiler's own `-HC` header also declared the integer signature as `int32_t`. The old generator emitted no warnings despite unresolved standard includes in the synthesized header.
 
-These scalar fixtures matched on the tested toolchain: their prior output was **unproven, not shown wrong**, by this experiment. It does not establish correctness for other D types, compiler configurations, or the C#, Hare, and V producer paths. Current generation refuses the unresolved includes rather than assuming their effects.
+These scalar fixtures matched on the tested toolchain: their prior output was **unproven, not shown wrong**, by this experiment. It does not establish correctness for other D types, compiler configurations, or other producer paths. Current generation refuses the unresolved includes rather than assuming their effects.
+
+## C#, Hare, and V producer probes
+
+At [`6d18eca`](https://github.com/tschk/equilibrium/commit/6d18eca4ce510663a18ebcc547d39c29b9dfabc3) on x86-64 Linux, seven C# Native AOT calls through the actual synthesized C header matched the tested integer widths, floating-point, pointer, and pointer-width signatures using .NET SDK 8.0.427 and GCC 12.2.0. V 0.5.2 and Harec 0.26.0 scalar and pointer calls also matched their actual synthesized headers for the tested values. These narrow results do not verify other signatures, targets, or Windows Native AOT. The current binding generator refused the unmodified headers because they included unresolved standard headers; diagnostic Rust calls used temporary copies with those includes removed and are not evidence that the normal loader succeeded. The Hare compilation used a temporary adapter invoking harec, QBE, and the assembler, not the Hare build driver.
+
+The same probes found two actual synthesis defects at that revision: a V export attribute and function on one line caused `int v_inline(int)` to be emitted as `void v_inline(void)` by associating the attribute with the next function; and Hare's valid `export @symbol(...) fn` ordering silently omitted the renamed export. The C# diagnostic Rust generation also left `intptr_t` and `uintptr_t` unresolved. These are observed results at the named revision, not claims that all calls through those producers are wrong.
 
 ## Priorities
 
