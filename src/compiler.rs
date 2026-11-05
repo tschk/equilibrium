@@ -273,7 +273,11 @@ fn compile_inner(
 
     if !output.status.success() {
         return Err(CompileError::CompilationFailed {
-            stderr,
+            stderr: if stdout.is_empty() {
+                stderr
+            } else {
+                format!("{stderr}\n{stdout}")
+            },
             exit_code: output.status.code(),
         });
     }
