@@ -988,32 +988,77 @@ fn hare_type(ty: &str) -> Option<String> {
 /// exports only methods with an `EntryPoint`; without one there is no C symbol.
 fn csharp_functions(source: &str) -> Vec<ForeignFn> {
     let text = strip_c_comments(source);
-    let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
     let mut entry: Option<String> = None;
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.contains("UnmanagedCallersOnly") {
-            entry = trimmed
-                .split_once("EntryPoint")
-                .and_then(|(_, after)| after.split('"').nth(1))
-                .map(str::to_string);
-            continue;
+    let mut remaining = text.as_str();
+    while !remaining.is_empty() {
+        remaining = remaining.trim_start();
+        if remaining.is_empty() {
+            break;
         }
-        if trimmed.is_empty() || trimmed.starts_with('[') {
+        if remaining.starts_with('[') {
+            let mut depth = 0usize;
+            let mut quoted = false;
+            let mut escaped = false;
+            let mut end = None;
+            for (index, ch) in remaining.char_indices() {
+                if quoted {
+                    if escaped {
+                        escaped = false;
+                    } else if ch == '\\' {
+                        escaped = true;
+                    } else if ch == '"' {
+                        quoted = false;
+                    }
+                } else {
+                    match ch {
+                        '"' => quoted = true,
+                        '[' => depth += 1,
+                        ']' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(index + 1);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let Some(end) = end else { break };
+            let attribute = &remaining[..end];
+            if attribute.contains("UnmanagedCallersOnly") {
+                entry = attribute
+                    .split_once("EntryPoint")
+                    .and_then(|(_, after)| after.split('"').nth(1))
+                    .map(str::to_string);
+            }
+            remaining = &remaining[end..];
             continue;
         }
         let Some(symbol) = entry.take() else {
+            remaining = remaining.split_once('\n').map_or("", |(_, rest)| rest);
             continue;
         };
-        let signature = signature_text(&lines, index, '{');
-        let signature = signature.split("=>").next().unwrap_or(&signature);
+        // Stop at the first declaration boundary, so a field or type cannot lend its
+        // attribute to a later method.
+        let end = remaining.find(['{', '}', ';']).unwrap_or(remaining.len());
+        let declaration = &remaining[..end];
+        let signature = declaration.split("=>").next().unwrap_or(declaration);
+        remaining = &remaining[end..];
         let Some(open) = signature.find('(') else {
             continue;
         };
         // `public static unsafe int Add(` -> return type is the word before the method name.
         let head: Vec<&str> = signature[..open].split_whitespace().collect();
         if !head.contains(&"static") || head.len() < 2 {
+            continue;
+        }
+        if head
+            .iter()
+            .any(|word| matches!(*word, "class" | "struct" | "interface" | "enum"))
+            || signature[..open].contains('=')
+        {
             continue;
         }
         let ret = head[head.len() - 2];
@@ -1398,5 +1443,39 @@ public static class Lib {
             assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
         }
         assert!(out.warnings.iter().any(|w| w.contains("cs_name")));
+    }
+
+    #[test]
+    fn csharp_header_handles_inline_and_multiline_attributes() {
+        let source = r#"
+public static class Lib {
+    [UnmanagedCallersOnly(EntryPoint = "inline")] public static int Inline(int x) => x;
+    [UnmanagedCallersOnly(
+        CallConvs = new[] { typeof(CallConvCdecl) },
+        EntryPoint = "multiline"
+    )] [Other] public static int Multi(
+        int x, int y) => x + y;
+    [Other] [UnmanagedCallersOnly(EntryPoint = "stacked")]
+    public static int Stacked() => 1;
+    [UnmanagedCallersOnly(EntryPoint = "not_field")]
+    static int field = Other();
+    public static int Unrelated() => 0;
+    [UnmanagedCallersOnly(EntryPoint = "not_property")]
+    static int Property { get; }
+    public static int Later() => 0;
+}
+"#;
+        let out = synthesize(Language::CSharp, source).expect("header");
+        let h = &out.header;
+        for expected in [
+            "int32_t inline(int32_t x);",
+            "int32_t multiline(int32_t x, int32_t y);",
+            "int32_t stacked(void);",
+        ] {
+            assert!(h.contains(expected), "{expected} missing from:\n{h}");
+        }
+        for absent in ["not_field", "not_property", "Unrelated", "Later"] {
+            assert!(!h.contains(absent), "{absent} leaked into:\n{h}");
+        }
     }
 }
