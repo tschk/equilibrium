@@ -388,10 +388,23 @@ fn write_csharp_aot_project(
   </ItemGroup>
 </Project>
 "#,
-            escape(&input.to_string_lossy())
+            escape(&dotnet_path(input))
         ),
     )?;
     Ok(project)
+}
+
+fn dotnet_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{unc}");
+        }
+        if let Some(drive) = path.strip_prefix(r"\\?\") {
+            return drive.to_string();
+        }
+    }
+    path.into_owned()
 }
 
 /// `net<major>.0` for the newest installed .NET SDK.
@@ -428,13 +441,13 @@ fn csharp_publish_args(project: &Path, output_dir: &Path) -> Vec<String> {
     };
     vec![
         "publish".to_string(),
-        project.to_string_lossy().into_owned(),
+        dotnet_path(project),
         "-c".to_string(),
         "Release".to_string(),
         "-r".to_string(),
         format!("{os}-{arch}"),
         "-o".to_string(),
-        output_dir.to_string_lossy().into_owned(),
+        dotnet_path(output_dir),
         "--nologo".to_string(),
     ]
 }
