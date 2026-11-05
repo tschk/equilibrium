@@ -494,7 +494,7 @@ mod tests {
     }
 
     #[test]
-    fn load_reports_skipped_binding_declarations() {
+    fn load_rejects_unsupported_binding_declarations() {
         let dir = tempfile::tempdir().unwrap();
         let source = dir.path().join("api.c");
         std::fs::write(&source, "void register_callback(void) {}\n").unwrap();
@@ -504,12 +504,15 @@ mod tests {
         )
         .unwrap();
 
-        let result =
-            load_with_options(&source, LoadOptions::default().compile(false).link(false)).unwrap();
-        assert!(result
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("register_callback")));
+        let error = load_with_options(&source, LoadOptions::default().compile(false).link(false))
+            .unwrap_err();
+        match error {
+            LoadError::BindingFailed(reason) => {
+                assert!(reason.contains("unsupported declarations"), "{reason}");
+                assert!(reason.contains("register_callback"), "{reason}");
+            }
+            other => panic!("expected binding failure, got {other:?}"),
+        }
     }
 
     #[test]

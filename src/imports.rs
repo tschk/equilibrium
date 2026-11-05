@@ -99,7 +99,11 @@ pub struct GeneratedImport {
 /// layout could not be reconstructed. An included function that uses one causes generation to
 /// return an error; unsupported typedefs not used by included functions are omitted with warnings.
 /// Reconstructed consumers also reject array typedefs in parameter position because C adjusts
-/// those to pointers.
+/// those to pointers. Consumers that reconstruct types refuse headers containing C enums because
+/// their representation is not established. C, C++, and Zig instead use the original header.
+/// Reconstructed consumers also refuse unresolved includes, macros, and conditionals, except simple
+/// include guards, `#pragma once`, and integer literal defines. This is not a preprocessor: callers
+/// must ensure external compiler definitions and prior includes do not change the header's meaning.
 pub fn generate_imports(
     header: &Path,
     language: Language,
@@ -115,7 +119,18 @@ pub fn generate_imports_from_parsed(
     parsed: &ParsedHeader,
     options: &ImportOptions,
 ) -> Result<GeneratedImport, String> {
+    parsed.ensure_supported_declarations()?;
     if !binds_against_c_header(language) {
+        if let Some(directive) = &parsed.unsupported_preprocessor {
+            return Err(format!(
+                "Cannot generate {language:?} imports without preprocessing: {directive}"
+            ));
+        }
+        if parsed.has_enum_keyword {
+            return Err(format!(
+                "Cannot generate {language:?} imports: C enum representation is not established"
+            ));
+        }
         if let Some(name) = parsed.array_typedef_parameter(&options.allowlist_functions) {
             return Err(format!(
                 "Cannot generate {language:?} imports: {name} has an array typedef parameter"
@@ -123,7 +138,11 @@ pub fn generate_imports_from_parsed(
         }
     }
     if language == Language::ScriptC {
-        return generate_scriptc_imports(header, parsed, options);
+        let mut generated = generate_scriptc_imports(header, parsed, options)?;
+        if parsed.synthesized_abi_unverified {
+            generated.warnings.push("Synthesized header ABI is unverified; inspect declarations and compilation context before use.".to_string());
+        }
+        return Ok(generated);
     }
 
     if language == Language::Rust {
@@ -140,7 +159,7 @@ pub fn generate_imports_from_parsed(
                 allowlist_functions: options.allowlist_functions.clone(),
                 ..Default::default()
             },
-        );
+        )?;
         return Ok(GeneratedImport {
             code: binding.code,
             language,
@@ -177,6 +196,9 @@ pub fn generate_imports_from_parsed(
     let declared_types = declared_import_types(parsed, language);
     let mut functions = Vec::new();
     let mut warnings = parsed.skipped.clone();
+    if parsed.synthesized_abi_unverified {
+        warnings.push("Synthesized header ABI is unverified; inspect declarations and compilation context before use.".to_string());
+    }
 
     if maps_declared_types(language) {
         let names = parsed

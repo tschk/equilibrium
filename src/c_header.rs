@@ -7,6 +7,9 @@ pub(crate) struct ParsedHeader {
     pub(crate) structs: Vec<StructDef>,
     pub(crate) unions: Vec<StructDef>,
     pub(crate) enums: Vec<EnumDef>,
+    pub(crate) has_enum_keyword: bool,
+    pub(crate) unsupported_preprocessor: Option<String>,
+    pub(crate) synthesized_abi_unverified: bool,
     pub(crate) functions: Vec<FunctionDef>,
     pub(crate) defines: Vec<DefineConst>,
     /// Function-like declarations that were not bound, with the reason, so callers can warn
@@ -65,6 +68,19 @@ pub(crate) struct FunctionDef {
 }
 
 impl ParsedHeader {
+    /// Refuse generation when the parser could not account for a declaration.
+    /// Call this at every public generation boundary, including parsed-header paths.
+    pub(crate) fn ensure_supported_declarations(&self) -> Result<(), String> {
+        if self.skipped.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Cannot generate bindings from unsupported declarations: {}",
+                self.skipped.join("; ")
+            ))
+        }
+    }
+
     pub(crate) fn array_typedef_parameter(&self, allowlist: &[String]) -> Option<&str> {
         self.functions
             .iter()
@@ -256,11 +272,65 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
     let mut skipped = Vec::new();
 
     let mut i = 0;
+    if content.lines().any(|line| line.ends_with('\\')) {
+        skipped.push("Skipped header: preprocessor line splicing is unsupported".to_string());
+    }
     let stripped = strip_c_comments(content);
     let lines: Vec<&str> = stripped.lines().map(str::trim).collect();
 
     while i < lines.len() {
         let line = lines[i];
+
+        if !line.starts_with('#') && top_level_semicolons(line) > 1 {
+            skipped.push(format!(
+                "Skipped multiple declarations on one line: `{line}`"
+            ));
+            i += 1;
+            continue;
+        }
+
+        if !line.is_empty()
+            && line
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '*' || c.is_whitespace())
+        {
+            if let Some((next_index, next)) = lines
+                .iter()
+                .enumerate()
+                .skip(i + 1)
+                .find(|(_, next)| !next.is_empty())
+                .filter(|(_, next)| next.contains('(') && !next.starts_with('#'))
+            {
+                skipped.push(format!("Skipped multiline declaration: `{line} {next}`"));
+                i = next_index + 1;
+                continue;
+            }
+        }
+
+        // Multiline prototypes and non-aggregate typedefs are outside this parser's
+        // single-line grammar. Consume the declaration so continuation lines cannot
+        // accidentally be interpreted as independent declarations.
+        if !line.starts_with('#')
+            && !line.contains('{')
+            && !line.ends_with(';')
+            && (line.starts_with("typedef ") || line.contains('('))
+        {
+            let mut declaration = line.to_string();
+            while i + 1 < lines.len() && !declaration.contains(';') {
+                if lines[i + 1].starts_with('#') || lines[i + 1].contains('{') {
+                    break;
+                }
+                i += 1;
+                declaration.push(' ');
+                declaration.push_str(lines[i]);
+            }
+            skipped.push(format!(
+                "Skipped multiline or unterminated declaration: `{}`",
+                declaration.trim()
+            ));
+            i += 1;
+            continue;
+        }
 
         if line.starts_with("#define") {
             if let Some(def) = parse_define(line) {
@@ -291,6 +361,14 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                         break;
                     }
                     i += 1;
+                }
+                if top_level_semicolons(&block) > 1 {
+                    skipped.push(format!(
+                        "Skipped multiple declarations in aggregate block: `{}`",
+                        block.trim()
+                    ));
+                    i += 1;
+                    continue;
                 }
                 if let Some(end) = block.rfind('}') {
                     let suffix = block[end + 1..].trim().trim_end_matches(';').trim();
@@ -334,7 +412,14 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                             rust_override: None,
                             callback_decl: None,
                         });
+                    } else {
+                        skipped.push(format!(
+                            "Skipped aggregate with unsupported declarator: `{}`",
+                            block.trim()
+                        ));
                     }
+                } else {
+                    skipped.push(format!("Skipped incomplete aggregate: `{}`", block.trim()));
                 }
             } else if line.ends_with(';') {
                 if line.contains("(*") {
@@ -351,20 +436,32 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
                             rust_override: Some(rust_type),
                             callback_decl,
                         });
+                    } else {
+                        skipped.push(format!(
+                            "Skipped typedef `{line}`: unsupported callback declaration"
+                        ));
                     }
-                } else if let Some((target, name)) = parse_typedef_line(line) {
-                    typedefs.push(TypedefDef {
-                        name,
-                        target,
-                        rust_override: None,
-                        callback_decl: None,
-                    });
+                } else if !line.contains(',') {
+                    if let Some((target, name)) = parse_typedef_line(line) {
+                        typedefs.push(TypedefDef {
+                            name,
+                            target,
+                            rust_override: None,
+                            callback_decl: None,
+                        });
+                    } else {
+                        skipped.push(format!("Skipped typedef `{line}`: unsupported declaration"));
+                    }
+                } else {
+                    skipped.push(format!(
+                        "Skipped typedef `{line}`: multiple declarators are unsupported"
+                    ));
                 }
             }
         }
 
         if !line.starts_with("typedef")
-            && !line.starts_with("struct")
+            && !(line.starts_with("struct ") && line.contains('{'))
             && !line.starts_with("enum")
             && !line.starts_with("//")
             && !line.starts_with("#")
@@ -388,10 +485,68 @@ pub(crate) fn parse_c_header(content: &str) -> ParsedHeader {
         structs,
         unions,
         enums,
+        unsupported_preprocessor: unsupported_preprocessor(&stripped),
+        synthesized_abi_unverified: content.contains("ABI unverified"),
+        has_enum_keyword: stripped
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .any(|word| word == "enum"),
         functions,
         defines,
         skipped,
     }
+}
+
+/// Identify directives whose effects cannot be reconstructed without preprocessing.
+fn unsupported_preprocessor(content: &str) -> Option<String> {
+    if content.contains("??=") || content.contains("%:") {
+        return Some("preprocessor digraphs and trigraphs are unsupported".to_string());
+    }
+    let lines: Vec<&str> = content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let guard = lines
+        .first()
+        .and_then(|line| line.strip_prefix("#ifndef "))
+        .filter(|name| is_c_identifier(name));
+    let guard = guard.filter(|name| {
+        lines
+            .get(1)
+            .is_some_and(|line| *line == format!("#define {name}"))
+            && lines.last() == Some(&"#endif")
+            && !lines[2..lines.len() - 1].iter().any(|line| {
+                line.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .any(|word| word == *name)
+            })
+    });
+    for (index, line) in lines.iter().enumerate() {
+        if !line.starts_with('#') {
+            continue;
+        }
+        if guard.is_some() && (index == 0 || index == 1 || index + 1 == lines.len()) {
+            continue;
+        }
+        if *line == "#pragma once" || parse_define(line).is_some() {
+            continue;
+        }
+        return Some((*line).to_string());
+    }
+    None
+}
+
+fn top_level_semicolons(text: &str) -> usize {
+    let mut depth = 0usize;
+    let mut count = 0;
+    for ch in text.chars() {
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => count += 1,
+            _ => {}
+        }
+    }
+    count
 }
 
 /// Split declarations only at the current brace level; nested aggregate members keep their body.
@@ -1234,6 +1389,23 @@ pub(crate) fn header_stem(path: &Path) -> String {
 #[cfg(test)]
 mod type_mapping_tests {
     use super::c_type_to_rust;
+
+    #[test]
+    fn unsupported_declarations_are_reported_without_hiding_following_functions() {
+        let parsed = super::parse_c_header(
+            "int multiline(\n int first,\n int second);\ntypedef void (*bad)(int, ...);\ntypedef int A, B;\nint good(void);\n",
+        );
+        assert_eq!(parsed.functions.len(), 1);
+        assert_eq!(parsed.functions[0].name, "good");
+        assert!(parsed.typedefs.is_empty());
+        for name in ["multiline", "bad", "A, B"] {
+            assert!(
+                parsed.skipped.iter().any(|warning| warning.contains(name)),
+                "{name}: {:?}",
+                parsed.skipped
+            );
+        }
+    }
 
     #[test]
     fn anonymous_aggregate_preserves_inner_bitfield_metadata() {

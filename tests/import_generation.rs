@@ -623,8 +623,7 @@ fn unnamed_parameters_keep_their_arity_and_unparseable_ones_are_reported() {
         "int add(int, int);\n\
          unsigned int mask(unsigned int, const char *);\n\
          void tag(struct node *, size_t);\n\
-         void tag_restrict(struct node *restrict n);\n\
-         void on(void (*cb)(int, int), void *ctx);\n",
+         void tag_restrict(struct node *restrict n);\n",
     )
     .unwrap();
 
@@ -636,13 +635,11 @@ fn unnamed_parameters_keep_their_arity_and_unparseable_ones_are_reported() {
     );
     assert_contains(&rust, "pub fn tag(arg0: *mut c_void, arg1: usize);");
     assert_contains(&rust, "pub fn tag_restrict(n: *mut c_void);");
-    assert!(!rust.code.contains("pub fn on("), "{}", rust.code);
+    std::fs::write(&header, "void on(void (*cb)(int, int), void *ctx);\n").unwrap();
+    let error = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap_err();
     assert!(
-        rust.warnings
-            .iter()
-            .any(|warning| warning.contains("`void on(") && warning.contains("parameter")),
-        "a declaration whose parameters cannot be parsed must be reported, not emitted short: {:?}",
-        rust.warnings
+        error.contains("void on(") && error.contains("parameter"),
+        "{error}"
     );
 }
 
@@ -701,35 +698,38 @@ const char *label(void);
 }
 
 #[test]
-fn rust_consumer_emits_declared_types_and_keeps_all_functions() {
-    // Previously the Rust consumer path dropped every function that referenced a header-declared
-    // type (enum / opaque handle), emitting only scalar-signature functions. The Rust consumer now
-    // routes through the full bindings generator, so the types are defined and no function is lost.
+fn reconstructed_consumers_reject_unverified_enum_representation() {
     let dir = tempdir().unwrap();
     let header = dir.path().join("handle.h");
-    std::fs::write(
-        &header,
-        "typedef enum { S_OK = 0, S_ERR = 1 } status;\n\
-         typedef struct Obj obj;\n\
-         obj *obj_new(void);\n\
-         void obj_free(obj *o);\n\
-         status obj_do(obj *o, int n);\n",
-    )
-    .unwrap();
-
-    let rust = generate_imports(&header, Language::Rust, &ImportOptions::default()).unwrap();
-    assert_contains(&rust, "pub enum status");
-    assert_contains(&rust, "pub struct obj");
-    assert_contains(&rust, "pub fn obj_new() -> *mut obj;");
-    assert_contains(&rust, "pub fn obj_free(o: *mut obj)");
-    assert_contains(&rust, "pub fn obj_do(o: *mut obj, n: c_int) -> status;");
-    assert!(
-        rust.warnings
-            .iter()
-            .all(|w| !w.contains("not supported for generated imports")),
-        "no function should be dropped for the Rust consumer: {:?}",
-        rust.warnings
-    );
+    for source in [
+        "typedef enum { S_OK = 0, S_ERR = 1 } status;\nstatus obj_do(void);\n",
+        "struct Container { enum { SMALL = 0 } value; };\n",
+        "typedef enum Forward Forward;\nForward *obj_do(void);\n",
+        "typedef enum { WIDE = 4294967295U } Wide;\n",
+    ] {
+        std::fs::write(&header, source).unwrap();
+        for language in [
+            Language::Rust,
+            Language::Nim,
+            Language::CSharp,
+            Language::D,
+            Language::Odin,
+            Language::V,
+            Language::Hare,
+            Language::ScriptC,
+        ] {
+            for options in [
+                ImportOptions::default(),
+                ImportOptions::default().allowlist_functions(["unrelated"]),
+            ] {
+                let error = generate_imports(&header, language, &options).unwrap_err();
+                assert!(
+                    error.contains("enum representation"),
+                    "{language:?}: {error}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -755,7 +755,10 @@ fn header_including_consumers_keep_functions_using_declared_types() {
     assert_contains(&c, "obj_new(");
     assert_contains(&c, "obj_do(");
 
-    for generated in [&zig, &c] {
+    let cpp = generate_imports(&header, Language::Cpp, &ImportOptions::default()).unwrap();
+    assert_contains(&cpp, "obj_do(");
+
+    for generated in [&zig, &c, &cpp] {
         assert!(
             generated
                 .warnings
@@ -773,14 +776,13 @@ fn declared_type_imports(language: Language) -> GeneratedImport {
     std::fs::write(
         &header,
         r#"
-typedef enum Mode { MODE_FIRST = 2, MODE_NEXT, MODE_ALIAS = 5 } Mode;
 typedef struct Handle Handle;
 typedef struct Point { int x; unsigned int y; int samples[3]; } Point;
 typedef union Value { int integer; float real; } Value;
 typedef Point Position;
 typedef int Count;
-Mode get_mode(Handle *handle);
-Handle *open_handle(Mode mode);
+int get_mode(Handle *handle);
+Handle *open_handle(int mode);
 Point move_point(Point point);
 Value read_value(Handle *handle);
 Position locate(Count count);
@@ -822,13 +824,11 @@ MissingAlias unknown_alias(void);
 fn nim_imports_emit_declared_types_and_keep_their_functions() {
     let generated = declared_type_imports(Language::Nim);
     for expected in [
-        "  Mode* = cint",
-        "const MODE_NEXT* = Mode(MODE_FIRST + 1)",
         "  Handle* {.bycopy.} = object",
         "  Point* {.bycopy.} = object",
         "  Value* {.bycopy, union.} = object",
         "samples*: array[3, cint]",
-        "proc get_mode(handle: ptr Handle): Mode",
+        "proc get_mode(handle: ptr Handle): cint",
         "  Position* = Point",
         "  Count* = cint",
     ] {
@@ -840,15 +840,13 @@ fn nim_imports_emit_declared_types_and_keep_their_functions() {
 fn csharp_imports_emit_declared_types_and_keep_their_functions() {
     let generated = declared_type_imports(Language::CSharp);
     for expected in [
-        "public enum Mode : int",
-        "MODE_NEXT = MODE_FIRST + 1",
         "public struct Handle",
         "public struct Point",
         "public struct Value",
         "[StructLayout(LayoutKind.Explicit)]",
         "[FieldOffset(0)]",
         "public fixed int samples[3]",
-        "public static extern Mode get_mode(IntPtr handle)",
+        "public static extern int get_mode(IntPtr handle)",
         "public static extern Point locate(int count)",
     ] {
         assert_contains(&generated, expected);
@@ -859,13 +857,11 @@ fn csharp_imports_emit_declared_types_and_keep_their_functions() {
 fn d_imports_emit_declared_types_and_keep_their_functions() {
     let generated = declared_type_imports(Language::D);
     for expected in [
-        "alias Mode = int",
-        "enum Mode MODE_NEXT = MODE_FIRST + 1",
         "struct Handle",
         "struct Point",
         "union Value",
         "int[3] samples",
-        "Mode get_mode(Handle* handle)",
+        "int get_mode(Handle* handle)",
         "alias Position = Point",
         "alias Count = int",
     ] {
@@ -880,13 +876,11 @@ fn odin_imports_emit_declared_types_and_keep_their_functions() {
         "package bindings",
         "import c \"core:c\"",
         "foreign eq {",
-        "Mode :: c.int",
-        "MODE_NEXT :: Mode(MODE_FIRST + 1)",
         "Handle :: struct",
         "Point :: struct",
         "Value :: struct #raw_union",
         "samples: [3]c.int",
-        "get_mode :: proc(handle: ^Handle) -> Mode",
+        "get_mode :: proc(handle: ^Handle) -> c.int",
         "Position :: Point",
         "Count :: c.int",
     ] {
@@ -898,13 +892,11 @@ fn odin_imports_emit_declared_types_and_keep_their_functions() {
 fn v_imports_emit_declared_types_and_keep_their_functions() {
     let generated = declared_type_imports(Language::V);
     for expected in [
-        "enum C.Mode",
-        "mode_next = mode_first + 1",
         "struct C.Handle",
         "struct C.Point",
         "union C.Value",
         "samples [3]int",
-        "fn C.get_mode(handle &C.Handle) C.Mode",
+        "fn C.get_mode(handle &C.Handle) int",
         "fn C.locate(count int) C.Point",
     ] {
         assert_contains(&generated, expected);
@@ -1027,16 +1019,15 @@ Outer get_outer(void);
 }
 
 #[test]
-fn mapping_imports_keep_plain_tagged_aggregate_and_enum_signatures() {
+fn mapping_imports_keep_plain_tagged_aggregate_signatures() {
     let dir = tempdir().unwrap();
     let header = dir.path().join("tagged.h");
     std::fs::write(
         &header,
         r#"
-enum State { STATE_START = 0, STATE_STOP = 1 };
 struct Record { int value; };
 union Payload { int value; double real; };
-int inspect_record(struct Record record, enum State state, union Payload payload);
+int inspect_record(struct Record record, union Payload payload);
 "#,
     )
     .unwrap();
@@ -1055,7 +1046,6 @@ int inspect_record(struct Record record, enum State state, union Payload payload
         );
         assert_contains(&generated, "inspect_record");
         assert_contains(&generated, "Record");
-        assert_contains(&generated, "State");
         assert_contains(&generated, "Payload");
     }
 }

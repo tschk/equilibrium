@@ -149,7 +149,9 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 
 **Platforms.** The end-to-end link tests build a consumer crate whose `build.rs` calls `load()`, link it and run it. They run on **Linux and macOS** only. On **Windows**, CI runs the unit tests, but `load()`'s compile-and-link path is never exercised. For languages that produce a shared library, `load()` links against the import library, and **the `.dll` itself is the caller's responsibility to deploy**: copy it beside the executable or put its directory on `PATH`. `load()` does not copy it. Instead it adds a warning to `LoadedModule::warnings` saying where the DLL is.
 
-The C header parser understands named and unnamed parameters, pointers, arrays, enums, structs, unions and function-pointer typedefs. A declaration it cannot parse (for example a parameter that is itself a function pointer, or `...`) is left out and reported in `warnings` rather than bound with the wrong arity.
+The C header parser handles named and unnamed parameters, pointers, arrays, structs, unions, and function-pointer typedefs. Binding generation refuses declarations it cannot parse, such as variadic functions. Rust bindings and reconstructed consumer imports also refuse C enums and unresolved preprocessing directives, including standard headers such as `<stdint.h>` and `<sys/types.h>`. Simple include guards, `#pragma once`, and integer literal defines are accepted. C, C++, and Zig consumers use the original header instead of reconstructing its types.
+
+Synthesized headers are marked **ABI unverified**. Check `CompileResult::warnings`, `GeneratedBinding::warnings`, `GeneratedImport::warnings`, or `LoadedModule::warnings` and verify the declarations against the compiled artifact before use. A synthesized header with unresolved includes is refused by Rust binding generation, so `load()` may return a binding error even when compilation succeeded. A handwritten header with declarations that pass these checks can be supplied beside the source. The parser does not preprocess headers or verify external compiler definitions, include paths, or target ABI settings.
 
 ### scriptc (TypeScript) notes
 

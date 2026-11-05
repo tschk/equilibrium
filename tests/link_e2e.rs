@@ -485,29 +485,15 @@ fn synthesized_header_with_standard_headers_compiles() {
         "header failed: {}\n{contents}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let bindings = generate_bindings(&header, &BindingOptions::default()).unwrap();
-    assert!(bindings.code.contains("fn sample("), "{}", bindings.code);
-    assert!(bindings.code.contains("fn included("), "{}", bindings.code);
-    assert!(!bindings.code.contains("fn helper("), "{}", bindings.code);
-    let rust = dir.path().join("bindings.rs");
-    write(&rust, &bindings.code);
-    let output = Command::new("rustc")
-        .args(["--crate-type", "lib"])
-        .arg(&rust)
-        .arg("-o")
-        .arg(dir.path().join("bindings.rlib"))
-        .output()
-        .unwrap();
+    let error = generate_bindings(&header, &BindingOptions::default()).unwrap_err();
     assert!(
-        output.status.success(),
-        "bindings failed: {}\n{}",
-        String::from_utf8_lossy(&output.stderr),
-        bindings.code
+        error.contains("without preprocessing") && error.contains("#include <stdint.h>"),
+        "{error}"
     );
 }
 
 #[test]
-fn system_typedef_in_generated_header_and_bindings_compiles() {
+fn system_typedef_header_compiles_but_bindings_are_refused() {
     if !available(Language::C) {
         return;
     }
@@ -537,28 +523,12 @@ fn system_typedef_in_generated_header_and_bindings_compiles() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let bindings =
+    let error =
         equilibrium_ffi::generate_bindings(&header, &equilibrium_ffi::BindingOptions::default())
-            .unwrap();
+            .unwrap_err();
     assert!(
-        bindings.code.contains("pub fn sample(n: isize) -> isize;"),
-        "{}",
-        bindings.code
-    );
-    let rust = dir.path().join("bindings.rs");
-    write(&rust, &bindings.code);
-    let output = Command::new("rustc")
-        .args(["--crate-type", "lib"])
-        .arg(&rust)
-        .arg("-o")
-        .arg(dir.path().join("bindings.rlib"))
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stderr),
-        bindings.code
+        error.contains("without preprocessing") && error.contains("#include <sys/types.h>"),
+        "{error}"
     );
 }
 
@@ -628,16 +598,39 @@ fn nim_source_without_a_header_links_through_load() {
 }
 
 #[test]
-fn rust_source_without_a_header_links_through_load() {
+fn rust_source_without_a_header_compiles_but_unresolved_includes_are_refused() {
     if !available(Language::Rust) {
         return;
     }
-    build_and_run(
-        "rgen",
-        "rs",
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("rgen.rs");
+    write(
+        &source,
         "fn twice(v: i32) -> i32 { v * 2 }\n\
          #[no_mangle]\npub extern \"C\" fn rgen_add(a: i32, b: i32) -> i32 { twice(a + b) / 2 }\n",
-        None,
+    );
+    let output_dir = dir.path().join("out");
+    let result = equilibrium_ffi::compile_to_c(&source, &output_dir).unwrap();
+    assert!(result.output_path.is_file());
+    let header = result.header_path.unwrap();
+    let contents = std::fs::read_to_string(&header).unwrap();
+    assert!(contents.contains("rgen_add"), "{contents}");
+    assert!(contents.contains("#include"), "{contents}");
+    let error = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap_err();
+    assert!(
+        error.contains("without preprocessing") && error.contains("#include"),
+        "{error}"
+    );
+    let error = equilibrium_ffi::load_with_options(
+        &source,
+        equilibrium_ffi::LoadOptions::default()
+            .output_dir(&output_dir)
+            .link(false),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, equilibrium_ffi::LoadError::BindingFailed(ref reason) if reason.contains("without preprocessing") && reason.contains("#include")),
+        "{error}"
     );
 }
 

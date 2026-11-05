@@ -67,7 +67,7 @@ pub fn generate_bindings_from_content(
             "Cannot generate bindings: callback {callback} references an incomplete aggregate"
         ));
     }
-    Ok(generate_bindings_from_parsed(header, &parsed, options))
+    generate_bindings_from_parsed(header, &parsed, options)
 }
 
 /// Generate Rust bindings from an already-parsed header. This is the single source of complete
@@ -77,8 +77,22 @@ pub fn generate_bindings_from_parsed(
     header: &Path,
     parsed: &ParsedHeader,
     options: &BindingOptions,
-) -> GeneratedBinding {
+) -> Result<GeneratedBinding, String> {
+    parsed.ensure_supported_declarations()?;
+    if let Some(directive) = &parsed.unsupported_preprocessor {
+        return Err(format!(
+            "Cannot generate Rust bindings without preprocessing: {directive}"
+        ));
+    }
+    if parsed.has_enum_keyword {
+        return Err(
+            "Cannot generate Rust bindings: C enum representation is not established".into(),
+        );
+    }
     let mut warnings = Vec::new();
+    if parsed.synthesized_abi_unverified {
+        warnings.push("Synthesized header ABI is unverified; inspect declarations and compilation context before use.".to_string());
+    }
     let mut code = String::new();
 
     code.push_str("// Auto-generated bindings by equilibrium-ffi\n");
@@ -95,11 +109,11 @@ pub fn generate_bindings_from_parsed(
 
     emit_bindings_from_parsed(parsed, options, &mut code, &mut warnings);
 
-    GeneratedBinding {
+    Ok(GeneratedBinding {
         code,
         source_header: header.to_path_buf(),
         warnings,
-    }
+    })
 }
 
 fn should_include(name: &str, allowlist: &[String]) -> bool {
@@ -629,7 +643,7 @@ typedef struct Outer {
         int value;
         struct { int first; int second; } pair;
     };
-    enum { ZERO = 0, ONE = 1 } state;
+    int state;
     int tail;
 } Outer;
 int use_outer(Outer *value);
@@ -641,10 +655,9 @@ int use_outer(Outer *value);
         assert!(binding.code.contains("pub struct Outer__anon_0"));
         assert!(binding.code.contains("pub struct Outer__anon_0__anon_1"));
         assert!(binding.code.contains("pub union Outer__anon_1"));
-        assert!(binding.code.contains("pub enum Outer__anon_2"));
         assert!(binding.code.contains("pub a: Outer__anon_0"));
         assert!(binding.code.contains("pub __anon_1: Outer__anon_1"));
-        assert!(binding.code.contains("pub state: Outer__anon_2"));
+        assert!(binding.code.contains("pub state: c_int"));
         assert!(binding.code.contains("pub tail: c_int"));
         let output = dir.path().join("out.rs");
         std::fs::write(
@@ -900,14 +913,33 @@ int use_outer(Outer *value);
         .unwrap();
 
         let opts = BindingOptions::default();
-        let binding = generate_bindings(&header, &opts).unwrap();
-        assert!(!binding.code.contains("include!"));
-        assert!(!binding.code.contains("/tmp/pwn"));
-        assert!(binding.code.contains("pub fn foo()"));
-        assert!(binding
-            .warnings
-            .iter()
-            .any(|w| w.contains("discriminant") || w.contains("Skipped")));
+        let error = generate_bindings(&header, &opts).unwrap_err();
+        assert!(error.contains("enum representation"));
+    }
+
+    #[test]
+    fn rejects_unverified_enum_representation() {
+        for source in [
+            "typedef enum { A = 0, B = 0 } Status;\nStatus get(void);",
+            "enum Small { ZERO = 0, ONE = 1 };",
+            "struct Outer { enum { ZERO = 0, ONE = 1 } state; };",
+            "typedef enum Forward Forward;\nForward *get(void);",
+            "typedef enum { HUGE = 4294967295U } Wide;",
+        ] {
+            let error = generate_bindings_from_content(
+                Path::new("test.h"),
+                source,
+                &BindingOptions::default(),
+            )
+            .unwrap_err();
+            assert!(error.contains("enum representation"), "{source}: {error}");
+        }
+        assert!(generate_bindings_from_content(
+            Path::new("test.h"),
+            "/* enum Foo */\nint get(void);",
+            &BindingOptions::default()
+        )
+        .is_ok());
     }
 
     #[test]
@@ -927,7 +959,7 @@ int use_outer(Outer *value);
     }
 
     #[test]
-    fn test_generate_bindings_skips_multiline_prototype() {
+    fn test_generate_bindings_rejects_multiline_prototype() {
         let dir = tempdir().unwrap();
         let header = dir.path().join("multi.h");
         std::fs::write(
@@ -937,9 +969,9 @@ int use_outer(Outer *value);
         .unwrap();
 
         let opts = BindingOptions::default();
-        let binding = generate_bindings(&header, &opts).unwrap();
-        assert!(!binding.code.contains("sneaky"));
-        assert!(binding.code.contains("pub fn ok()"));
+        let error = generate_bindings(&header, &opts).unwrap_err();
+        assert!(error.contains("unsupported declarations"), "{error}");
+        assert!(error.contains("sneaky"), "{error}");
     }
 
     #[test]

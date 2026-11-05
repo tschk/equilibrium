@@ -114,7 +114,7 @@ pub struct CompileResult {
     pub stdout: String,
     /// Compiler warnings (stderr, if successful).
     pub stderr: String,
-    /// Exports left out of a synthesized header, with the reason.
+    /// Header synthesis limitations and exports left out, with the reason.
     pub warnings: Vec<String>,
 }
 
@@ -298,11 +298,13 @@ fn compile_inner(
     // Check if header was generated (language-specific)
     let mut synth_warnings = Vec::new();
     let header_path = if language == Language::ScriptC {
+        synth_warnings.push("Synthesized header ABI is unverified; inspect declarations and compilation context before use.".to_string());
         Some(header_output.clone())
     } else if sibling_header.is_file() {
         Some(sibling_header)
     } else if language == Language::D {
         if let Some(header) = crate::header_synth::d_header_from_hc(&stdout) {
+            synth_warnings.push("Synthesized header ABI is unverified; inspect declarations and compilation context before use.".to_string());
             std::fs::write(&header_output, header)?;
             Some(header_output.clone())
         } else {
@@ -818,6 +820,7 @@ fn synthesize_header(
     let Some(synthesized) = crate::header_synth::synthesize(language, &source) else {
         return Ok(None);
     };
+    warnings.push("Synthesized header ABI is unverified; inspect declarations and compilation context before use.".to_string());
     let header = format!(
         "{}{}",
         includes.join("\n"),
