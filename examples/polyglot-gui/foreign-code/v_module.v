@@ -1,7 +1,8 @@
 // V module — temperature and unit conversions
-// Compiled with: v -gc none -o v_module.o -prod v_module.v
+// Built by build.rs with: v -shared -gc none -o <out>/libv_module v_module.v
+// (a non-main module, so the shared library carries no `main` and links into Rust).
 
-module main
+module v_module
 
 @[export: 'v_celsius_to_fahrenheit']
 pub fn v_celsius_to_fahrenheit(c f64) f64 {
@@ -17,5 +18,3 @@ pub fn v_km_to_miles(km f64) f64 {
 pub fn v_kelvin_to_rankine(k f64) f64 {
 	return k * 1.8
 }
-
-fn main() {}

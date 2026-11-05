@@ -198,7 +198,8 @@ impl Language {
                 args
             }
             Language::CSharp => {
-                // C# to native requires AOT compilation
+                // csc emits a managed assembly, not a C ABI library; `compile_to_c` refuses C#
+                // producers (Native AOT is not implemented). Kept for callers of `to_c_args`.
                 vec![
                     "-target:library".to_string(),
                     format!("-out:{output}"),

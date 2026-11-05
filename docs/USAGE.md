@@ -270,47 +270,41 @@ pub struct Point {
 
 ## Complete Example
 
-Full workflow from V source to Rust usage:
+Full workflow from a Zig source to Rust usage. Bindings come from a C header: equilibrium generates one for TypeScript (scriptc) and for Rust when `cbindgen` is installed; for Zig, C, C++, D, Nim, Odin and Hare you write `<stem>.h` beside the source.
 
-**1. Write V code (`math.v`):**
+**1. Write the Zig code (`native/math.zig`) and its header (`native/math.h`):**
 
-```v
-[export: 'add_v']
-pub fn add(a int, b int) int {
-    return a + b
+```zig
+pub export fn add_zig(a: c_int, b: c_int) c_int {
+    return a + b;
 }
 ```
 
-**2. Compile with equilibrium:**
+```c
+int add_zig(int a, int b);
+```
+
+**2. Load it from `build.rs`** (compiles, emits the link directives, generates bindings):
 
 ```rust
-use equilibrium_ffi::{compile_to_c, generate_bindings};
-use std::path::Path;
-
-// Compile V to C
-let source = Path::new("math.v");
-let build_dir = Path::new("./build");
-std::fs::create_dir_all(build_dir)?;
-
-let result = compile_to_c(source, build_dir)?;
-
-// Generate Rust bindings
-let bindings = generate_bindings(&result.output_path)?;
-std::fs::write("src/bindings.rs", bindings.rust_code)?;
+fn main() {
+    let lib = equilibrium_ffi::load("native/math.zig").unwrap();
+    let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    std::fs::write(out.join("bindings.rs"), lib.bindings_code().unwrap()).unwrap();
+}
 ```
 
 **3. Use in Rust:**
 
 ```rust
-mod bindings;
+include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 fn main() {
-    unsafe {
-        let sum = bindings::add_v(5, 3);
-        println!("5 + 3 = {}", sum);
-    }
+    println!("5 + 3 = {}", unsafe { add_zig(5, 3) });
 }
 ```
+
+V is not a good fit for this flow: `load()` on a `.v` file produces V's `-backend c` program source, which is not linked. Build V as a shared library instead (`v -shared -gc none`, non-`main` module), as `examples/polyglot-gui/build.rs` does.
 
 ## Error Handling
 

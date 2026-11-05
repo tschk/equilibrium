@@ -4,7 +4,7 @@
 
 [eq.tsc.hk](https://eq.tsc.hk) — project site, built with crepuscularity + moonshine and hosted on Cloudflare Pages.
 
-Equilibrium auto-detects source files in various programming languages, compiles them to C intermediate representation, and loads the result into a Rust-friendly module handle. Binding generation is available when you need it, but `load()` is the primary path. Generated consumer wrappers can target the same C ABI surface for other supported languages.
+Equilibrium auto-detects source files in various programming languages, compiles them to a C-ABI artifact (object, archive or shared library), emits the link directives, and generates Rust bindings from a C header. Headers are generated for TypeScript (scriptc) and for Rust when `cbindgen` is installed; for the other languages you provide `<stem>.h` — see [Supported Languages](#supported-languages). Binding generation is available when you need it, but `load()` is the primary path. Generated consumer wrappers can target the same C ABI surface for other supported languages.
 
 ## `eq` CLI
 
@@ -131,19 +131,25 @@ eq generate mylib.h --consumer csharp -o src/mylib.cs
 
 ## Supported Languages
 
-| Language | Compiler | Notes |
-|----------|----------|-------|
-| **V (Vlang)** | `v` | `-backend c` outputs C |
-| **Zig** | `zig` | `build-obj -OReleaseFast -fPIC` |
-| **C** | `clang`/`gcc` | Already C (preprocessed) |
-| **C++** | `clang++`/`g++` | Compiled to object files |
-| **C#** | `dotnet` | Native AOT |
-| **Rust** | `rustc` | cbindgen for header generation |
-| **D** | `ldc2`/`dmd`/`gdc` | `-HC` flag for C headers |
-| **Nim** | `nim` | Compiles to C by default, `--mm:none --app:staticlib` |
-| **Odin** | `odin` | `-build-mode:obj -reloc-mode:pic` |
-| **Hare** | `hare` | QBE backend (Linux only) |
-| **TypeScript/JavaScript** | `scriptc` | Library mode: `scriptc build --lib --profile` → self-contained static archive |
+`load()` always compiles and (in a build script) emits the `cargo:rustc-link-*` directives for the artifact. **Rust bindings are generated only when there is a C header**: equilibrium generates one for scriptc, asks `cbindgen` for Rust when it is installed, and otherwise uses a hand-written `<stem>.h` beside the source. For every other language you write that header yourself; without it `load()` compiles and links but reports `no header found; bindings not generated`.
+
+| Language | Compiler | Artifact / link | Header for bindings |
+|----------|----------|-----------------|---------------------|
+| **C** | `clang`/`gcc` | object, linked | sibling `<stem>.h` |
+| **C++** | `clang++`/`g++` | object, linked | sibling `<stem>.h` (`extern "C"` API) |
+| **Zig** | `zig` | object (`build-obj -OReleaseFast -fPIC`), linked | sibling `<stem>.h` |
+| **D** | `ldc2`/`dmd`/`gdc` | object, linked | sibling `<stem>.h` |
+| **Odin** | `odin` | object (`-build-mode:obj`), linked | sibling `<stem>.h` |
+| **Hare** | `hare` | object (QBE, Linux only), linked | sibling `<stem>.h` |
+| **Nim** | `nim` | `lib<stem>.a` (`--app:staticlib --mm:none`), linked | sibling `<stem>.h` |
+| **Rust** | `rustc` | `lib<stem>.dylib`/`.so` cdylib, linked with an rpath | `cbindgen` if installed, else sibling `<stem>.h` |
+| **TypeScript/JavaScript** | `scriptc` | `lib<stem>.a` (library mode), linked | generated from `export function`s |
+| **V (Vlang)** | `v` | `-backend c` C source; **not linked** (it is a whole program, not a library) | sibling `<stem>.h` |
+| **C#** | — | **not supported as a source**: `csc` makes a managed assembly and Native AOT is not implemented | — (C# works as a consumer: P/Invoke imports) |
+
+**Platforms.** The end-to-end link tests build a consumer crate whose `build.rs` calls `load()`, link it and run it. They run on **Linux and macOS** only. On **Windows**, CI runs the unit tests, but `load()`'s compile-and-link path is never exercised. For languages that produce a shared library, `load()` links against the import library, and **the `.dll` itself is the caller's responsibility to deploy**: copy it beside the executable or put its directory on `PATH`. `load()` does not copy it. Instead it adds a warning to `LoadedModule::warnings` saying where the DLL is.
+
+The C header parser understands named and unnamed parameters, pointers, arrays, enums, structs, unions and function-pointer typedefs. A declaration it cannot parse (for example a parameter that is itself a function pointer, or `...`) is left out and reported in `warnings` rather than bound with the wrong arity.
 
 ### scriptc (TypeScript) notes
 
@@ -292,7 +298,7 @@ cargo install --git https://github.com/tschk/equilibrium --features cli
 
 ## Polyglot Demo
 
-`examples/polyglot-gui/` is the live demo. It loads C via `load()` and shows the rest of the compilers it can find, including TypeScript through scriptc.
+`examples/polyglot-gui/` is the live demo. It loads C via `load()` and TypeScript through scriptc; its `build.rs` drives the other compilers it finds directly (V is built as a real shared library with `v -shared`, on Unix hosts).
 
 ```bash
 cd examples/polyglot-gui

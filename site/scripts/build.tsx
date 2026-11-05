@@ -29,7 +29,7 @@ const body = renderToStaticMarkup(<Home />).replaceAll("./favicon.svg", `./${ico
 
 const title = "Equilibrium — C FFI generation for C-compiling languages";
 const description =
-	"Load V, Zig, C, C++, C#, Rust, D, Nim, Odin, Hare, or TypeScript into Rust with one call. Equilibrium detects the language, compiles it to C, and binds it — plus consumer wrappers, rig, eqts, and eqswift.";
+	"Load Zig, C, C++, Rust, D, Nim, Odin, Hare, or TypeScript into Rust with one call. Equilibrium detects the language, compiles and links it, and binds it from a C header — plus consumer wrappers, rig, eqts, and eqswift.";
 const canonical = "https://eq.tsc.hk/";
 
 const html = `<!doctype html>

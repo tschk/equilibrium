@@ -20,7 +20,7 @@
 //! | V (Vlang) | `v` | `v -o output.c -backend c` |
 //! | Zig | `zig` | `zig build-obj -femit-asm` or C export |
 //! | C/C++ | `clang`/`gcc` | Native |
-//! | C# | `csc`/`mono` | P/Invoke + Native AOT |
+//! | C# | — | Consumer only (P/Invoke imports); C# sources are refused, Native AOT is not implemented |
 //! | Rust | `rustc` | cbindgen |
 //! | TypeScript/JavaScript | `scriptc` | `scriptc build --lib --profile` static archive |
 

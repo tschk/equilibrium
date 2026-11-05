@@ -109,6 +109,7 @@ fn emit_bindings_from_parsed(
     code: &mut String,
     warnings: &mut Vec<String>,
 ) {
+    warnings.extend(parsed.skipped.iter().cloned());
     for def in &parsed.defines {
         if should_include(&def.name, &options.allowlist_types) {
             if let Some(ident) = rust_ident(&def.name) {
