@@ -22,6 +22,8 @@ Since this snapshot, binding generation has been hardened against several incomp
 
 These are distinct contracts, not interchangeable TypeScript FFI conventions. The examples describe generated code at the cited revisions. They do not establish that every transport or arbitrary native library follows the same rules.
 
+The [cross-family FFI ownership contract](FFI-OWNERSHIP-PROPOSAL.md) is a proposal for future adapters, not an existing interoperability guarantee.
+
 **A pointer crossing these boundaries does not carry its ownership or lifetime with it.** Treating an archive-owned result as an eqts-owned buffer, retaining callback bytes after return, or passing an invalid borrowed span to rig can cause use-after-free, invalid frees, undefined behavior, or a crash in the consumer process. The projects do not expose one shared ownership contract; adapters must preserve each producer's documented rules rather than infer them from a C pointer.
 
 - **equilibrium's scriptc library producer.** The current [`header`](../src/scriptc.rs) output says that the archive owns buffered results until the module's `collect` function is called. Consumers must not treat those results as independently owned allocations or use them after collection. The same header says to initialize the module before calling exports and that an unregistered trap aborts the process. Registering a panic sink receives trap messages; the header does not promise recovery from every trap. These current-source observations are separate from the audit snapshot above.
