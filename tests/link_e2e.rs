@@ -564,8 +564,40 @@ fn source_feature_macro_before_include_is_refused_with_reason() {
     assert!(!out.join(".equilibrium-header-feature/feature.h").exists());
 }
 
+fn assert_synthesized_include_refused(stem: &str, extension: &str, code: &str, include: &str) {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join(format!("{stem}.{extension}"));
+    write(&source, code);
+    let output_dir = dir.path().join("out");
+    let result = equilibrium_ffi::compile_to_c(&source, &output_dir).unwrap();
+    assert!(result.output_path.is_file());
+    let header = result.header_path.unwrap();
+    let contents = std::fs::read_to_string(&header).unwrap();
+    assert!(contents.contains(&format!("{stem}_add")), "{contents}");
+    assert!(contents.contains(include), "{contents}");
+    let error = equilibrium_ffi::generate_bindings(&header, &Default::default()).unwrap_err();
+    assert!(
+        error.contains("without preprocessing") && error.contains(include),
+        "{error}"
+    );
+    let error = equilibrium_ffi::load_with_options(
+        &source,
+        equilibrium_ffi::LoadOptions::default()
+            .output_dir(&output_dir)
+            .link(false),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, equilibrium_ffi::LoadError::BindingFailed(ref reason) if reason.contains("without preprocessing") && reason.contains(include)),
+        "{error}"
+    );
+}
+
+const D_SOURCE: &str = "module dmath;\nint helper(int a) { return a; }\n\
+         extern(C) int dmath_add(int a, int b) { return helper(a) + b; }\n";
+
 #[test]
-fn d_source_without_a_header_links_through_load() {
+fn d_source_without_a_header_compiles_but_unresolved_includes_are_refused() {
     if !available(Language::D) {
         return;
     }
@@ -574,12 +606,23 @@ fn d_source_without_a_header_links_through_load() {
         eprintln!("skipping: gdc has no -HC header output");
         return;
     }
+    assert_synthesized_include_refused("dmath", "d", D_SOURCE, "#include <stdbool.h>");
+}
+
+#[test]
+fn d_source_with_a_handwritten_header_links_through_load() {
+    if !available(Language::D) {
+        return;
+    }
+    if find_compiler(Language::D).unwrap().compiler.as_deref() == Some("gdc") {
+        eprintln!("skipping: gdc has no -HC header output");
+        return;
+    }
     build_and_run(
         "dmath",
         "d",
-        "module dmath;\nint helper(int a) { return a; }\n\
-         extern(C) int dmath_add(int a, int b) { return helper(a) + b; }\n",
-        None,
+        D_SOURCE,
+        Some("int dmath_add(int a, int b);\n"),
     );
 }
 
@@ -663,48 +706,78 @@ fn odin_source_without_a_header_links_through_load() {
     );
 }
 
+const V_SOURCE: &str = "module main\n\nfn twice(v int) int { return v * 2 }\n\n\
+         @[export: 'vmath_add']\npub fn vmath_add(a int, b int) int { return twice(a + b) / 2 }\n\n\
+         fn main() {}\n";
+
 #[test]
-fn v_source_without_a_header_links_through_load() {
+fn v_source_without_a_header_compiles_but_unresolved_includes_are_refused() {
+    if !available(Language::V) {
+        return;
+    }
+    assert_synthesized_include_refused("vmath", "v", V_SOURCE, "#include <stdint.h>");
+}
+
+#[test]
+fn v_source_with_a_handwritten_header_links_through_load() {
     if !available(Language::V) {
         return;
     }
     build_and_run(
         "vmath",
         "v",
-        "module main\n\nfn twice(v int) int { return v * 2 }\n\n\
-         @[export: 'vmath_add']\npub fn vmath_add(a int, b int) int { return twice(a + b) / 2 }\n\n\
-         fn main() {}\n",
-        None,
+        V_SOURCE,
+        Some("int vmath_add(int a, int b);\n"),
     );
 }
 
+const HARE_SOURCE: &str = "fn twice(v: int) int = v * 2;\n\nexport fn hmath_add(a: int, b: int) int = twice(a + b) / 2;\n";
+
 #[test]
-fn hare_source_without_a_header_links_through_load() {
+fn hare_source_without_a_header_compiles_but_unresolved_includes_are_refused() {
+    if !available(Language::Hare) {
+        return;
+    }
+    assert_synthesized_include_refused("hmath", "ha", HARE_SOURCE, "#include <stdint.h>");
+}
+
+#[test]
+fn hare_source_with_a_handwritten_header_links_through_load() {
     if !available(Language::Hare) {
         return;
     }
     build_and_run(
         "hmath",
         "ha",
-        "fn twice(v: int) int = v * 2;\n\nexport fn hmath_add(a: int, b: int) int = twice(a + b) / 2;\n",
-        None,
+        HARE_SOURCE,
+        Some("int hmath_add(int a, int b);\n"),
     );
 }
 
+const CSHARP_SOURCE: &str = "using System.Runtime.InteropServices;\n\
+         public static class CsMath {\n\
+             static int Twice(int v) => v * 2;\n\
+             [UnmanagedCallersOnly(EntryPoint = \"csmath_add\")]\n\
+             public static int Add(int a, int b) => Twice(a + b) / 2;\n\
+         }\n";
+
 #[test]
-fn csharp_native_aot_source_without_a_header_links_through_load() {
+fn csharp_native_aot_source_without_a_header_compiles_but_unresolved_includes_are_refused() {
+    if !available(Language::CSharp) {
+        return;
+    }
+    assert_synthesized_include_refused("csmath", "cs", CSHARP_SOURCE, "#include <stdint.h>");
+}
+
+#[test]
+fn csharp_native_aot_source_with_a_handwritten_header_links_through_load() {
     if !available(Language::CSharp) {
         return;
     }
     build_and_run(
         "csmath",
         "cs",
-        "using System.Runtime.InteropServices;\n\
-         public static class CsMath {\n\
-             static int Twice(int v) => v * 2;\n\
-             [UnmanagedCallersOnly(EntryPoint = \"csmath_add\")]\n\
-             public static int Add(int a, int b) => Twice(a + b) / 2;\n\
-         }\n",
-        None,
+        CSHARP_SOURCE,
+        Some("int csmath_add(int a, int b);\n"),
     );
 }
