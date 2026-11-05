@@ -61,7 +61,7 @@ div min-h-screen overflow-x-hidden antialiased bg-zinc-950 text-zinc-300 font-mo
 				h2 block text-[11px] uppercase tracking-[0.2em] text-zinc-500 mb-4
 					"Languages"
 				p block text-zinc-400 max-w-2xl mb-5
-					"Producers compile to the C ABI. Consumers take any C header and generate in-process FFI declarations (C# is consumer-only; V needs a manual `v -shared` build). scriptc does both directions."
+					"Producers compile to the C ABI. Consumers take any C header and generate in-process FFI declarations (C# is consumer-only). scriptc does both directions."
 				div flex flex-wrap gap-2 mb-6
 					span rounded border border-zinc-700 bg-zinc-900/60 px-3 py-1.5 text-xs text-zinc-300
 						"V"
